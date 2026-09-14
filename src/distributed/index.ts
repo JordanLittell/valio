@@ -1,5 +1,6 @@
 import type { Router } from 'express';
-import { ClusterConfigError, type NodeConfig } from '../config.ts';
+import type { NodeConfig } from '../config.ts';
+import type { Leadership } from '../leadership/state.ts';
 import type { KVStore } from '../store.ts';
 import { Coordinator } from './coordinator.ts';
 import { Participant } from './participant.ts';
@@ -9,23 +10,20 @@ import { internalRouter } from './routes.ts';
 export { NotCoordinatorError, TxAbortedError } from './errors.ts';
 
 export type Replication = {
-  role: 'coordinator' | 'participant';
   store: ReplicatedStore;
   router: Router;
 };
 
-export function createReplication(node: NodeConfig, local: KVStore): Replication {
+/**
+ * Every node can coordinate; whether it does is a runtime check against
+ * leadership, not a role baked in at construction.
+ */
+export function createReplication(node: NodeConfig, local: KVStore, leadership: Leadership): Replication {
   const participant = new Participant(local);
-  // parseClusterConfig guarantees exactly one coordinator; a hand-built NodeConfig may not.
-  const coordinatorNode = node.nodes.find((n) => n.coordinator);
-  if (!coordinatorNode) throw new ClusterConfigError('cluster config names no coordinator');
-
-  const isCoordinator = coordinatorNode.id === node.self.id;
-  const coordinator = isCoordinator ? new Coordinator(node.self, node.peers, participant) : null;
+  const coordinator = new Coordinator(node.self, node.peers, participant);
 
   return {
-    role: isCoordinator ? 'coordinator' : 'participant',
-    store: new ReplicatedStore(local, coordinator, coordinatorNode.url),
+    store: new ReplicatedStore(local, coordinator, leadership),
     router: internalRouter(participant),
   };
 }

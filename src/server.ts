@@ -8,6 +8,8 @@ import {
   type NodeConfig,
 } from './config.ts';
 import { createReplication } from './distributed/index.ts';
+import { createElection } from './election/index.ts';
+import { Elector, Leadership } from './leadership/index.ts';
 import { MemoryStore } from './store.ts';
 
 /**
@@ -37,19 +39,33 @@ const name = node ? `node ${node.self.id}` : 'valio';
 
 const local = new MemoryStore();
 // TODO: replace inferring standalone mode from VALIO_NODE_ID with an explicit standalone flag.
-const replication = node ? createReplication(node, local) : undefined;
-const app = createApp(replication?.store ?? local, { node, internalRouter: replication?.router });
+const leadership = node ? new Leadership(node.self, node.nodes) : undefined;
+const election = node
+  ? createElection(node, {
+      onConsensus: (value) => {
+        if (typeof value === 'number') leadership!.adopt(value);
+      },
+    })
+  : undefined;
+const replication = node && leadership ? createReplication(node, local, leadership) : undefined;
+const elector = node && election && leadership ? new Elector(node.self, election.proposer, leadership) : undefined;
+const internalRouters = [replication?.router, election?.router].filter((router) => router !== undefined);
+const app = createApp(replication?.store ?? local, { node, internalRouters, leadership });
 
 const server = app.listen(port, host, (err?: Error) => {
   if (err) {
     console.error(`${name} failed to start: ${err.message}`);
     process.exit(1);
   }
-  const cluster =
-    node && replication
-      ? ` (${node.nodes.length}-node cluster, ${replication.role}, peers: ${node.peers.map((p) => p.id).join(', ') || 'none'})`
-      : '';
+  const cluster = node ? ` (${node.nodes.length}-node cluster, peers: ${node.peers.map((p) => p.id).join(', ') || 'none'})` : '';
   console.log(`${name} listening on http://${host}:${port}${cluster}`);
+  if (!elector || !leadership) return;
+  leadership.onChange((view) => {
+    console.log(`${name} leader is node ${view.leaderId}${leadership.isLeader() ? ' (this node)' : ''}`);
+  });
+  elector.elect().catch((electErr: unknown) => {
+    console.error(`${name} election failed: ${(electErr as Error).message}`);
+  });
 });
 
 function shutdown(): void {

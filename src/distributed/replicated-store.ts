@@ -1,22 +1,23 @@
 import type { KVStore } from '../store.ts';
 import type { JsonValue } from '../types.ts';
+import type { Leadership } from '../leadership/state.ts';
 import type { Coordinator } from './coordinator.ts';
 import { NotCoordinatorError } from './errors.ts';
 import type { Event } from './types.ts';
 
 /**
  * KVStore whose writes go through 2PC. Reads are served from the local
- * store. On non-coordinator nodes, writes throw NotCoordinatorError.
+ * store. On non-leader nodes, writes throw NotCoordinatorError.
  */
 export class ReplicatedStore implements KVStore {
   readonly #local: KVStore;
-  readonly #coordinator: Coordinator | null;
-  readonly #coordinatorUrl: string;
+  readonly #coordinator: Coordinator;
+  readonly #leadership: Leadership;
 
-  constructor(local: KVStore, coordinator: Coordinator | null, coordinatorUrl: string) {
+  constructor(local: KVStore, coordinator: Coordinator, leadership: Leadership) {
     this.#local = local;
     this.#coordinator = coordinator;
-    this.#coordinatorUrl = coordinatorUrl;
+    this.#leadership = leadership;
   }
 
   get(key: string): Promise<JsonValue | undefined> {
@@ -40,7 +41,7 @@ export class ReplicatedStore implements KVStore {
   }
 
   async #write(event: Event): Promise<boolean> {
-    if (this.#coordinator) return this.#coordinator.run(event);
-    throw new NotCoordinatorError(this.#coordinatorUrl);
+    if (this.#leadership.isLeader()) return this.#coordinator.run(event);
+    throw new NotCoordinatorError(this.#leadership.leaderUrl());
   }
 }
