@@ -36,13 +36,10 @@ function buildCliArgs(operation: string, payload: Record<string, unknown>): stri
             break;
         }
         case 'cluster':
-            args.push(operation);
-            if (payload.clusterOperation !== undefined) {
-                args.push(String(payload.clusterOperation));
+            if (payload.subcommand === undefined) {
+                throw new Error('cluster requires a subcommand');
             }
-            if (payload.node !== undefined) {
-                args.push('--node', String(payload.node));
-            }
+            args.push(operation, String(payload.subcommand));
             break;
         case 'list':
         case 'clear':
@@ -100,7 +97,7 @@ function call(operation: string, payload: Record<string, unknown> = {}): Promise
 
 /** Runs `valio cluster describe` and parses the node id -> status map it prints. */
 async function describeCluster(): Promise<ClusterDescription> {
-    const stdout = await call('cluster', { clusterOperation: 'describe', cluster: CLUSTER_CONFIG });
+    const stdout = await call('cluster', { subcommand: 'describe', cluster: CLUSTER_CONFIG });
     try {
         return JSON.parse(stdout) as ClusterDescription;
     } catch (err) {

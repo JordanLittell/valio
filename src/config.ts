@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 
 export const DEFAULT_CLUSTER_PATH = 'cluster.json';
 
-export type NodeInfo = { id: number; url: string, leader: boolean };
+export type NodeInfo = { id: number; url: string; leader: boolean };
 
 export type ClusterConfig = { nodes: NodeInfo[] };
 

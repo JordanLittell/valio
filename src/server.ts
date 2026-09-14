@@ -36,6 +36,7 @@ const port = node ? node.port : Number(process.env.PORT ?? 3001);
 const name = node ? `node ${node.self.id}` : 'valio';
 
 const local = new MemoryStore();
+// TODO: replace inferring standalone mode from VALIO_NODE_ID with an explicit standalone flag.
 const replication = node ? createReplication(node, local) : undefined;
 const app = createApp(replication?.store ?? local, { node, internalRouter: replication?.router });
 

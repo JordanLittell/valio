@@ -13,13 +13,13 @@ Commands:
   list                   Print all keys and values (with --json, as a JSON object)
   clear                  Clear the store
   status                 Show the target node's status
-  cluster                Show the status of every node in the cluster config
   cluster describe       Print every node's status block as JSON, keyed by node id
+
 Options:
   --url URL       Server URL (default: $VALIO_URL or http://localhost:3001)
   --node ID       Target a node by id from the cluster config instead of --url
   --cluster PATH  Cluster config file (default: $VALIO_CLUSTER or ./cluster.json)
-  --json          Parse set values as JSON / print list, status, and cluster as JSON
+  --json          Parse set values as JSON / print list and status as JSON
   -h, --help      Show this help`;
 
 const EXIT_OK = 0;
@@ -57,9 +57,12 @@ async function run(argv: string[]): Promise<number> {
 
   if (command === 'cluster') {
     const [operation] = args;
-    if (operation === undefined) return showCluster(clusterPath, opts.json);
+    const supported = CLUSTER_OPERATIONS.join(', ');
+    if (operation === undefined) {
+      throw new UsageError(`missing cluster operation (supported: ${supported})\n\n${USAGE}`);
+    }
     if (operation !== 'describe') {
-      throw new UsageError(`unknown cluster operation: ${operation} (supported: ${CLUSTER_OPERATIONS.join(', ')})`);
+      throw new UsageError(`unknown cluster operation: ${operation} (supported: ${supported})\n\n${USAGE}`);
     }
     requireArgs(args, 1, 'cluster describe');
     return describeCluster(clusterPath);
@@ -186,29 +189,6 @@ async function queryCluster(clusterPath: string): Promise<NodeReport[]> {
   );
 }
 
-/** Queries every node in the cluster config. Exits 2 unless every node is up. */
-async function showCluster(clusterPath: string, json: boolean): Promise<number> {
-  const reports = await queryCluster(clusterPath);
-
-  if (json) {
-    console.log(JSON.stringify(reports, null, 2));
-  } else {
-    const rows = [
-      ['ID', 'URL', 'STATE', 'PID', 'KEYS', 'UPTIME'],
-      ...reports.map((r) => [
-        String(r.id),
-        r.url,
-        r.error && r.state === 'error' ? `error (${r.error})` : r.state,
-        r.status ? String(r.status.pid) : '-',
-        r.status ? String(r.status.keys) : '-',
-        r.status ? formatUptime(r.status.uptimeMs) : '-',
-      ]),
-    ];
-    console.log(table(rows));
-  }
-  return reports.every((r) => r.state === 'up') ? EXIT_OK : EXIT_UNAVAILABLE;
-}
-
 /**
  * Prints `{"<node id>": <status block>}` for the whole cluster. Exits 2 without
  * printing if any node failed, so callers never parse a partial description.
@@ -233,11 +213,6 @@ async function describeCluster(clusterPath: string): Promise<number> {
   return EXIT_OK;
 }
 
-function table(rows: string[][]): string {
-  const widths = rows[0]!.map((_, col) => Math.max(...rows.map((row) => row[col]!.length)));
-  return rows.map((row) => row.map((cell, col) => cell.padEnd(widths[col]!)).join('  ').trimEnd()).join('\n');
-}
-
 function formatUptime(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
@@ -246,7 +221,6 @@ function requireArgs(args: string[], count: number, usage: string): string[] {
   if (args.length !== count) throw new UsageError(`usage: valio ${usage}`);
   return args;
 }
-
 
 try {
   process.exitCode = await run(process.argv.slice(2));
