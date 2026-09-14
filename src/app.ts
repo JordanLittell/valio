@@ -1,6 +1,7 @@
 import express from 'express';
-import type { NextFunction, Request, Response } from 'express';
+import type { NextFunction, Request, Response, Router } from 'express';
 import type { NodeConfig } from './config.ts';
+import { NotCoordinatorError, TxAbortedError } from './distributed/errors.ts';
 import type { KVStore } from './store.ts';
 import type { JsonValue, StatusResponse } from './types.ts';
 
@@ -9,11 +10,14 @@ type KeyParams = { key: string };
 export type AppOptions = {
   /** Present when the server runs as a member of a cluster. */
   node?: NodeConfig | undefined;
+  /** Peer-to-peer routes (e.g. 2PC), mounted before the client routes. */
+  internalRouter?: Router | undefined;
 };
 
-export function createApp(store: KVStore, { node }: AppOptions = {}): express.Express {
+export function createApp(store: KVStore, { node, internalRouter }: AppOptions = {}): express.Express {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
+  if (internalRouter) app.use(internalRouter);
 
   app.get('/health', (_req, res) => {
     res.json({ ok: true });
@@ -22,6 +26,7 @@ export function createApp(store: KVStore, { node }: AppOptions = {}): express.Ex
   app.get('/status', async (_req, res) => {
     const status: StatusResponse = {
       id: node?.self.id ?? null,
+      isCoordinator: node?.self.coordinator === true,
       url: node?.self.url ?? null,
       peers: node?.peers.map((p) => p.id) ?? [],
       pid: process.pid,
@@ -75,7 +80,16 @@ export function createApp(store: KVStore, { node }: AppOptions = {}): express.Ex
     res.status(404).json({ error: 'route not found' });
   });
 
-  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+    if (err instanceof NotCoordinatorError) {
+      const location = err.coordinatorUrl + req.originalUrl;
+      res.status(307).location(location).json({ error: err.message, location });
+      return;
+    }
+    if (err instanceof TxAbortedError) {
+      res.status(503).set('Retry-After', '1').json({ error: err.message, txId: err.txId, blockedBy: err.blockedBy });
+      return;
+    }
     const status = (err as { status?: number }).status;
     if (status === 400 || status === 413) {
       res.status(status).json({ error: (err as Error).message });

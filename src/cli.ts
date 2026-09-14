@@ -2,7 +2,7 @@
 import { parseArgs } from 'node:util';
 import { ValioClient, ValioHttpError, ValioUnavailableError } from './client.ts';
 import { ClusterConfigError, DEFAULT_CLUSTER_PATH, findNode, loadClusterConfig, parseNodeId } from './config.ts';
-import type { JsonValue, StatusResponse } from './types.ts';
+import type { ClusterDescription, JsonValue, StatusResponse } from './types.ts';
 
 const USAGE = `Usage: valio [--url URL | --node ID] [--cluster PATH] [--json] <command>
 
@@ -13,18 +13,23 @@ Commands:
   list                   Print all keys and values (with --json, as a JSON object)
   clear                  Clear the store
   status                 Show the target node's status
-  cluster                Show the status of every node in the cluster config
+  cluster describe       Print every node's status block as JSON, keyed by node id
+
+By default commands target every node in the cluster config, failing over to the
+next node when one is unreachable. --url and --node pin the command to one node.
 
 Options:
-  --url URL       Server URL (default: $VALIO_URL or http://localhost:3001)
-  --node ID       Target a node by id from the cluster config instead of --url
+  --url URL       Pin to one server URL (default: $VALIO_URL, else the cluster config)
+  --node ID       Pin to a node by id from the cluster config instead of --url
   --cluster PATH  Cluster config file (default: $VALIO_CLUSTER or ./cluster.json)
-  --json          Parse set values as JSON / print list, status, and cluster as JSON
+  --json          Parse set values as JSON / print list and status as JSON
   -h, --help      Show this help`;
 
 const EXIT_OK = 0;
 const EXIT_USER = 1;
 const EXIT_UNAVAILABLE = 2;
+
+const CLUSTER_OPERATIONS = ['describe'] as const;
 
 class UsageError extends Error {}
 
@@ -54,11 +59,19 @@ async function run(argv: string[]): Promise<number> {
   const clusterPath = opts.cluster ?? process.env.VALIO_CLUSTER ?? DEFAULT_CLUSTER_PATH;
 
   if (command === 'cluster') {
-    requireArgs(args, 0, 'cluster');
-    return showCluster(clusterPath, opts.json);
+    const [operation] = args;
+    const supported = CLUSTER_OPERATIONS.join(', ');
+    if (operation === undefined) {
+      throw new UsageError(`missing cluster operation (supported: ${supported})\n\n${USAGE}`);
+    }
+    if (operation !== 'describe') {
+      throw new UsageError(`unknown cluster operation: ${operation} (supported: ${supported})\n\n${USAGE}`);
+    }
+    requireArgs(args, 1, 'cluster describe');
+    return describeCluster(clusterPath);
   }
 
-  const client = new ValioClient(targetUrl(opts, clusterPath));
+  const client = new ValioClient(targetUrls(opts, clusterPath));
 
   switch (command) {
     case 'get': {
@@ -144,12 +157,25 @@ async function run(argv: string[]): Promise<number> {
   }
 }
 
-function targetUrl(opts: { url?: string | undefined; node?: string | undefined }, clusterPath: string): string {
+function targetUrls(
+  opts: { url?: string | undefined; node?: string | undefined; cluster?: string | undefined },
+  clusterPath: string,
+): string[] {
   if (opts.node !== undefined) {
     if (opts.url !== undefined) throw new UsageError('use either --url or --node, not both');
-    return findNode(loadClusterConfig(clusterPath), parseNodeId(opts.node)).url;
+    return [findNode(loadClusterConfig(clusterPath), parseNodeId(opts.node)).url];
   }
-  return opts.url ?? process.env.VALIO_URL ?? 'http://localhost:3001';
+  if (opts.url !== undefined) return [opts.url];
+  if (process.env.VALIO_URL) return [process.env.VALIO_URL];
+
+  try {
+    return loadClusterConfig(clusterPath).nodes.map((n) => n.url);
+  } catch (err) {
+    // An explicitly-given config path must still error; only ./cluster.json falls back.
+    const explicit = opts.cluster !== undefined || process.env.VALIO_CLUSTER !== undefined;
+    if (explicit || !(err instanceof ClusterConfigError)) throw err;
+    return ['http://localhost:3001'];
+  }
 }
 
 type NodeReport = {
@@ -160,10 +186,10 @@ type NodeReport = {
   error?: string;
 };
 
-/** Queries every node in the cluster config. Exits 2 unless every node is up. */
-async function showCluster(clusterPath: string, json: boolean): Promise<number> {
+/** Asks every node in the cluster config for its status, in parallel. */
+async function queryCluster(clusterPath: string): Promise<NodeReport[]> {
   const { nodes } = loadClusterConfig(clusterPath);
-  const reports = await Promise.all(
+  return Promise.all(
     nodes.map(async ({ id, url }): Promise<NodeReport> => {
       try {
         const status = await new ValioClient(url, 1000).status();
@@ -177,29 +203,30 @@ async function showCluster(clusterPath: string, json: boolean): Promise<number> 
       }
     }),
   );
-
-  if (json) {
-    console.log(JSON.stringify(reports, null, 2));
-  } else {
-    const rows = [
-      ['ID', 'URL', 'STATE', 'PID', 'KEYS', 'UPTIME'],
-      ...reports.map((r) => [
-        String(r.id),
-        r.url,
-        r.error && r.state === 'error' ? `error (${r.error})` : r.state,
-        r.status ? String(r.status.pid) : '-',
-        r.status ? String(r.status.keys) : '-',
-        r.status ? formatUptime(r.status.uptimeMs) : '-',
-      ]),
-    ];
-    console.log(table(rows));
-  }
-  return reports.every((r) => r.state === 'up') ? EXIT_OK : EXIT_UNAVAILABLE;
 }
 
-function table(rows: string[][]): string {
-  const widths = rows[0]!.map((_, col) => Math.max(...rows.map((row) => row[col]!.length)));
-  return rows.map((row) => row.map((cell, col) => cell.padEnd(widths[col]!)).join('  ').trimEnd()).join('\n');
+/**
+ * Prints `{"<node id>": <status block>}` for the whole cluster. Exits 2 without
+ * printing if any node failed, so callers never parse a partial description.
+ */
+async function describeCluster(clusterPath: string): Promise<number> {
+  const description: ClusterDescription = {};
+  const failures: string[] = [];
+
+  for (const report of await queryCluster(clusterPath)) {
+    if (report.state === 'up' && report.status) {
+      description[String(report.id)] = report.status;
+    } else {
+      failures.push(`node ${report.id} (${report.url}): ${report.error ?? report.state}`);
+    }
+  }
+
+  if (failures.length > 0) {
+    console.error(failures.join('\n'));
+    return EXIT_UNAVAILABLE;
+  }
+  console.log(JSON.stringify(description, null, 2));
+  return EXIT_OK;
 }
 
 function formatUptime(ms: number): string {

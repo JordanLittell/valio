@@ -7,6 +7,7 @@ import {
   parseNodeId,
   type NodeConfig,
 } from './config.ts';
+import { createReplication } from './distributed/index.ts';
 import { MemoryStore } from './store.ts';
 
 /**
@@ -34,12 +35,20 @@ const host = process.env.HOST ?? '0.0.0.0';
 const port = node ? node.port : Number(process.env.PORT ?? 3001);
 const name = node ? `node ${node.self.id}` : 'valio';
 
-const server = createApp(new MemoryStore(), { node }).listen(port, host, (err?: Error) => {
+const local = new MemoryStore();
+// TODO: replace inferring standalone mode from VALIO_NODE_ID with an explicit standalone flag.
+const replication = node ? createReplication(node, local) : undefined;
+const app = createApp(replication?.store ?? local, { node, internalRouter: replication?.router });
+
+const server = app.listen(port, host, (err?: Error) => {
   if (err) {
     console.error(`${name} failed to start: ${err.message}`);
     process.exit(1);
   }
-  const cluster = node ? ` (${node.nodes.length}-node cluster, peers: ${node.peers.map((p) => p.id).join(', ') || 'none'})` : '';
+  const cluster =
+    node && replication
+      ? ` (${node.nodes.length}-node cluster, ${replication.role}, peers: ${node.peers.map((p) => p.id).join(', ') || 'none'})`
+      : '';
   console.log(`${name} listening on http://${host}:${port}${cluster}`);
 });
 
