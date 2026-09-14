@@ -23,6 +23,10 @@ export type StatusResponse = {
   isCoordinator: boolean;
   /** Node id of the current leader; null when none is known. */
   leaderId: number | null;
+  /** Paxos epoch of the current leader; null when none is known. */
+  epoch: number | null;
+  /** `initializing` until WAL catch-up finishes; then the node accepts client requests. */
+  state: 'initializing' | 'available';
 };
 
 /** Unreachable or otherwise unqueryable node in `valio cluster describe` output. */

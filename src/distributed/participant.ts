@@ -1,19 +1,33 @@
 import type { KVStore } from '../store.ts';
+import type { Wal } from './wal.ts';
 import { describeEvent, type AbortResponse, type CommitResponse, type Event, type Tx, type Vote } from './types.ts';
 
 const short = (txId: string) => txId.slice(0, 8);
 
 /**
  * 2PC participant. Holds at most one prepared (staged) transaction and applies
- * committed transactions to the local store in index order. State is in memory only.
+ * committed transactions to the local store in index order. When a WAL is
+ * provided, committed txs are fsynced before apply so a restart can replay them.
  */
 export class Participant {
   readonly store: KVStore;
+  readonly #wal: Wal | undefined;
   commitIndex = 0;
   staged: Tx | null = null;
 
-  constructor(store: KVStore) {
+  constructor(store: KVStore, wal?: Wal) {
     this.store = store;
+    this.#wal = wal;
+  }
+
+  /** Replays the WAL into the empty store. No-op when there is no WAL. */
+  async restore(): Promise<void> {
+    if (!this.#wal) return;
+    const records = await this.#wal.load();
+    for (const tx of records) {
+      await applyEvent(this.store, tx.event);
+      this.commitIndex = tx.index;
+    }
   }
 
   prepare(tx: Tx): Vote {
@@ -34,10 +48,25 @@ export class Participant {
       return { ok: false, reason: 'unknown tx' };
     }
     this.staged = null;
-    this.commitIndex = tx.index;
+    if (this.#wal) await this.#wal.append(tx);
     const result = await applyEvent(this.store, tx.event);
+    this.commitIndex = tx.index;
     console.log(`2pc commit ${short(txId)} #${tx.index} ${describeEvent(tx.event)}`);
     return { ok: true, result };
+  }
+
+  /**
+   * Applies an already-committed tx from a peer's WAL. Used to catch up a joining
+   * node; not a 2PC vote.
+   */
+  async install(tx: Tx): Promise<void> {
+    if (tx.index <= this.commitIndex) return;
+    if (tx.index !== this.commitIndex + 1) {
+      throw new Error(`cannot install #${tx.index} at commitIndex ${this.commitIndex}`);
+    }
+    if (this.#wal) await this.#wal.append(tx);
+    await applyEvent(this.store, tx.event);
+    this.commitIndex = tx.index;
   }
 
   /** Always ok: aborting a tx we don't hold is a no-op. */

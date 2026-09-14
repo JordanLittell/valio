@@ -1,6 +1,9 @@
 import { Router } from 'express';
 import type { Participant } from './participant.ts';
 import type { Tx } from './types.ts';
+import type { Wal } from './wal.ts';
+
+export const WAL_PATH = '/internal/wal';
 
 const EVENT_TYPES = new Set(['SET', 'DEL', 'CLEAR']);
 
@@ -22,8 +25,15 @@ function txIdOf(body: unknown): string | undefined {
 }
 
 /** Peer-to-peer 2PC endpoints. */
-export function internalRouter(participant: Participant): Router {
+export function internalRouter(participant: Participant, wal?: Wal): Router {
   const router = Router();
+
+  router.get(WAL_PATH, async (req, res) => {
+    const raw = Number(req.query.after);
+    const after = Number.isInteger(raw) ? raw : -1;
+    const entries = wal ? (await wal.load()).filter((tx) => tx.index > after) : [];
+    res.json({ entries });
+  });
 
   router.post('/internal/2pc/prepare', (req, res) => {
     const tx = (req.body as { tx?: unknown } | undefined)?.tx;

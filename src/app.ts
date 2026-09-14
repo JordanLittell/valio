@@ -8,6 +8,12 @@ import type { JsonValue, StatusResponse } from './types.ts';
 
 type KeyParams = { key: string };
 
+export type NodeState = 'initializing' | 'available';
+
+export type Membership = {
+  state: NodeState;
+};
+
 export type AppOptions = {
   /** Present when the server runs as a member of a cluster. */
   node?: NodeConfig | undefined;
@@ -15,9 +21,11 @@ export type AppOptions = {
   internalRouters?: Router[] | undefined;
   /** Live view of who leads; /status and write redirects read this. */
   leadership?: Leadership | undefined;
+  /** Joining nodes stay initializing until WAL catch-up finishes. */
+  membership?: Membership | undefined;
 };
 
-export function createApp(store: KVStore, { node, internalRouters, leadership }: AppOptions = {}): express.Express {
+export function createApp(store: KVStore, { node, internalRouters, leadership, membership }: AppOptions = {}): express.Express {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
   for (const router of internalRouters ?? []) app.use(router);
@@ -31,13 +39,23 @@ export function createApp(store: KVStore, { node, internalRouters, leadership }:
       id: node?.self.id ?? null,
       isCoordinator: leadership?.isLeader() === true,
       leaderId: leadership?.leaderId ?? null,
+      epoch: leadership?.epoch ?? null,
       url: node?.self.url ?? null,
       peers: node?.peers.map((p) => p.id) ?? [],
       pid: process.pid,
       uptimeMs: Math.round(process.uptime() * 1000),
       keys: Object.keys(await store.list()).length,
+      state: membership?.state ?? 'available',
     };
     res.json(status);
+  });
+
+  app.use((req, res, next) => {
+    if (membership?.state === 'initializing' && req.path.startsWith('/kv')) {
+      res.status(503).json({ error: 'node is initializing' });
+      return;
+    }
+    next();
   });
 
   app.get('/kv', async (_req, res) => {

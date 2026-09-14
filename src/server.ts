@@ -1,4 +1,4 @@
-import { createApp } from './app.ts';
+import { createApp, type Membership } from './app.ts';
 import {
   ClusterConfigError,
   DEFAULT_CLUSTER_PATH,
@@ -7,7 +7,8 @@ import {
   parseNodeId,
   type NodeConfig,
 } from './config.ts';
-import { createReplication } from './distributed/index.ts';
+import { catchUp, createReplication } from './distributed/index.ts';
+import { FileWal, walPath } from './distributed/wal.ts';
 import { createElection } from './election/index.ts';
 import { Elector, Leadership } from './leadership/index.ts';
 import { MemoryStore } from './store.ts';
@@ -36,6 +37,8 @@ const node = resolveNode();
 const host = process.env.HOST ?? '0.0.0.0';
 const port = node ? node.port : Number(process.env.PORT ?? 3001);
 const name = node ? `node ${node.self.id}` : 'valio';
+const joining = process.env.VALIO_JOIN === '1';
+const membership: Membership = { state: joining ? 'initializing' : 'available' };
 
 const local = new MemoryStore();
 // TODO: replace inferring standalone mode from VALIO_NODE_ID with an explicit standalone flag.
@@ -47,18 +50,13 @@ const election = node
       },
     })
   : undefined;
-const replication = node && leadership ? createReplication(node, local, leadership) : undefined;
+const wal = node ? new FileWal(walPath(node.self.id)) : undefined;
+const replication = node && leadership ? await createReplication(node, local, leadership, wal) : undefined;
 const elector = node && election && leadership ? new Elector(node.self, election.proposer, leadership) : undefined;
 const internalRouters = [replication?.router, election?.router].filter((router) => router !== undefined);
-const app = createApp(replication?.store ?? local, { node, internalRouters, leadership });
+const app = createApp(replication?.store ?? local, { node, internalRouters, leadership, membership });
 
-const server = app.listen(port, host, (err?: Error) => {
-  if (err) {
-    console.error(`${name} failed to start: ${err.message}`);
-    process.exit(1);
-  }
-  const cluster = node ? ` (${node.nodes.length}-node cluster, peers: ${node.peers.map((p) => p.id).join(', ') || 'none'})` : '';
-  console.log(`${name} listening on http://${host}:${port}${cluster}`);
+function startElection(): void {
   if (!elector || !leadership) return;
   leadership.onChange((view) => {
     console.log(`${name} leader is node ${view.leaderId}${leadership.isLeader() ? ' (this node)' : ''}`);
@@ -67,6 +65,28 @@ const server = app.listen(port, host, (err?: Error) => {
   elector.elect().catch((electErr: unknown) => {
     console.error(`${name} election failed: ${(electErr as Error).message}`);
   });
+}
+
+const server = app.listen(port, host, (err?: Error) => {
+  if (err) {
+    console.error(`${name} failed to start: ${err.message}`);
+    process.exit(1);
+  }
+  const cluster = node ? ` (${node.nodes.length}-node cluster, peers: ${node.peers.map((p) => p.id).join(', ') || 'none'})` : '';
+  console.log(`${name} listening on http://${host}:${port}${cluster}${joining ? ' (initializing)' : ''}`);
+  if (joining && node && replication && leadership) {
+    catchUp(node.peers, replication.participant, leadership)
+      .then(() => {
+        membership.state = 'available';
+        console.log(`${name} available after catch-up (${replication.participant.commitIndex} entries)`);
+        startElection();
+      })
+      .catch((joinErr: unknown) => {
+        console.error(`${name} catch-up failed: ${(joinErr as Error).message}`);
+      });
+    return;
+  }
+  startElection();
 });
 
 function shutdown(): void {

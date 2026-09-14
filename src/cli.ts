@@ -1,7 +1,10 @@
 #!/usr/bin/env node
+import { spawn } from 'node:child_process';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { ValioClient, ValioHttpError, ValioUnavailableError } from './client.ts';
-import { ClusterConfigError, DEFAULT_CLUSTER_PATH, findNode, loadClusterConfig, parseNodeId } from './config.ts';
+import { ClusterConfigError, DEFAULT_CLUSTER_PATH, findNode, loadClusterConfig, parseClusterConfig, parseNodeId, saveClusterConfig, type ClusterConfig } from './config.ts';
 import type { ClusterDescription, JsonValue, StatusResponse, UnavailableNodeStatus } from './types.ts';
 
 const USAGE = `Usage: valio [--url URL | --node ID] [--cluster PATH] [--json] <command>
@@ -14,6 +17,7 @@ Commands:
   clear                  Clear the store
   status                 Show the target node's status
   cluster describe       Print every node's status as JSON; unreachable nodes are marked unavailable
+  cluster add [URL]      Append a node to the cluster config, start it, and catch it up from a peer
 
 By default commands target every node in the cluster config, failing over to the
 next node when one is unreachable. --url and --node pin the command to one node.
@@ -29,7 +33,8 @@ const EXIT_OK = 0;
 const EXIT_USER = 1;
 const EXIT_UNAVAILABLE = 2;
 
-const CLUSTER_OPERATIONS = ['describe'] as const;
+const CLUSTER_OPERATIONS = ['describe', 'add'] as const;
+const SERVER = fileURLToPath(new URL('./server.ts', import.meta.url));
 
 class UsageError extends Error {}
 
@@ -63,6 +68,9 @@ async function run(argv: string[]): Promise<number> {
     const supported = CLUSTER_OPERATIONS.join(', ');
     if (operation === undefined) {
       throw new UsageError(`missing cluster operation (supported: ${supported})\n\n${USAGE}`);
+    }
+    if (operation === 'add') {
+      return addNode(clusterPath, args[1] ?? opts.url);
     }
     if (operation !== 'describe') {
       throw new UsageError(`unknown cluster operation: ${operation} (supported: ${supported})\n\n${USAGE}`);
@@ -145,6 +153,7 @@ async function run(argv: string[]): Promise<number> {
             `peers\t${status.peers.join(', ') || '-'}`,
             `pid\t${status.pid}`,
             `keys\t${status.keys}`,
+            `state\t${status.state}`,
             `uptime\t${formatUptime(status.uptimeMs)}`,
           ].join('\n'),
         );
@@ -229,6 +238,62 @@ async function describeCluster(clusterPath: string): Promise<number> {
 
   console.log(JSON.stringify(description, null, 2));
   return EXIT_OK;
+}
+
+/**
+ * Records the node in the cluster config if needed, then starts a server process
+ * with VALIO_JOIN=1 so it copies the WAL from a peer before accepting requests.
+ */
+async function addNode(clusterPath: string, rawUrl: string | undefined): Promise<number> {
+  const file = resolve(clusterPath);
+  const config = loadClusterConfig(file);
+  const url = rawUrl === undefined ? nextUrl(config) : originOf(rawUrl);
+  let node = config.nodes.find((n) => n.url === url);
+  if (!node) {
+    const next = parseClusterConfig({ nodes: [...config.nodes, { id: config.nodes.length, url }] }, file);
+    saveClusterConfig(file, next);
+    node = next.nodes.at(-1)!;
+  }
+
+  try {
+    const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(500) });
+    if (res.ok) throw new UsageError(`a node is already running at ${url}`);
+  } catch (err) {
+    if (err instanceof UsageError) throw err;
+  }
+
+  const child = spawn(process.execPath, [SERVER], {
+    env: {
+      ...process.env,
+      VALIO_NODE_ID: String(node.id),
+      VALIO_CLUSTER: file,
+      VALIO_JOIN: '1',
+    },
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+  console.log(JSON.stringify({ id: node.id, url: node.url, pid: child.pid }, null, 2));
+  return EXIT_OK;
+}
+
+function originOf(raw: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new UsageError(`invalid url: ${raw}`);
+  }
+  if (parsed.protocol !== 'http:') throw new UsageError(`url must use http://: ${raw}`);
+  return parsed.origin;
+}
+
+function nextUrl(config: ClusterConfig): string {
+  const last = config.nodes.at(-1);
+  if (!last) throw new UsageError('cluster config has no nodes');
+  const url = new URL(last.url);
+  url.port = String(Number(url.port || '80') + 1);
+  return url.origin;
 }
 
 function formatUptime(ms: number): string {

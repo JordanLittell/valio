@@ -25,7 +25,7 @@ async function startNode(
   const leadership = new Leadership(node.self, node.nodes);
   if (leaderId !== undefined) leadership.adopt(leaderId);
   const local = new MemoryStore();
-  const replication = createReplication(node, local, leadership);
+      const replication = await createReplication(node, local, leadership);
   const app = createApp(replication.store, { node, internalRouters: [replication.router], leadership });
   const server: Server = await new Promise((resolve) => {
     const s = app.listen(0, '127.0.0.1', () => resolve(s));
@@ -135,7 +135,7 @@ async function startLiveCluster(size: number): Promise<{ nodes: LiveNode[]; clos
       const node = nodeConfig(config, id);
       const leadership = new Leadership(node.self, node.nodes);
       leadership.adopt(0);
-      const replication = createReplication(node, new MemoryStore(), leadership);
+      const replication = await createReplication(node, new MemoryStore(), leadership);
       const app = createApp(replication.store, {
         node,
         internalRouters: [replication.router],

@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { before, describe, it } from 'node:test';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { isAvailableNode, isUnavailableNode, type ClusterDescription, type StatusResponse } from '../../src/types.ts';
@@ -40,6 +41,9 @@ function buildCliArgs(operation: string, payload: Record<string, unknown>): stri
                 throw new Error('cluster requires a subcommand');
             }
             args.push(operation, String(payload.subcommand));
+            if (payload.target !== undefined) {
+                args.push(String(payload.target));
+            }
             break;
         case 'list':
         case 'clear':
@@ -62,7 +66,7 @@ function buildCliArgs(operation: string, payload: Record<string, unknown>): stri
     return args;
 }
 
-function call(operation: string, payload: Record<string, unknown> = {}): Promise<string> {
+export function call(operation: string, payload: Record<string, unknown> = {}): Promise<string> {
     return new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [CLI, ...buildCliArgs(operation, payload)], {
             env: process.env,
@@ -96,7 +100,7 @@ function call(operation: string, payload: Record<string, unknown> = {}): Promise
 }
 
 /** Runs `valio cluster describe` and parses the node id -> status map it prints. */
-async function describeCluster(): Promise<ClusterDescription> {
+export async function describeCluster(): Promise<ClusterDescription> {
     const stdout = await call('cluster', { subcommand: 'describe', cluster: CLUSTER_CONFIG });
     try {
         return JSON.parse(stdout) as ClusterDescription;
@@ -106,7 +110,7 @@ async function describeCluster(): Promise<ClusterDescription> {
 }
 
 /** Every node should hold the same number of keys once the load has replicated. */
-async function assertKeysAreEqualAcrossNodes(): Promise<void> {
+export async function assertKeysAreEqualAcrossNodes(): Promise<void> {
     const description = await describeCluster();
     const counts = Object.entries(description)
         .filter((entry): entry is [string, StatusResponse] => isAvailableNode(entry[1]))
@@ -126,7 +130,7 @@ async function assertKeysAreEqualAcrossNodes(): Promise<void> {
 }
 
 /** Polls a killed node until it stops answering, so later assertions see the cluster without it. */
-async function waitForShutdown(url: string | null, timeoutMs = 5000): Promise<void> {
+export async function waitForShutdown(url: string | null, timeoutMs = 5000): Promise<void> {
     if (url === null) {
         return;
     }
@@ -140,6 +144,22 @@ async function waitForShutdown(url: string | null, timeoutMs = 5000): Promise<vo
         await new Promise((resolve) => setTimeout(resolve, 100));
     }
     throw new Error(`node at ${url} is still answering ${timeoutMs}ms after being killed`);
+}
+
+/** Polls /status until the joining node reports state=available. */
+async function waitUntilAvailable(url: string, timeoutMs = 10000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        try {
+            const status = (await (await fetch(`${url}/status`, { signal: AbortSignal.timeout(500) })).json()) as StatusResponse;
+            console.log(status);
+            if (status.state === 'available') return;
+        } catch {
+            // process is still starting
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`node at ${url} did not become available within ${timeoutMs}ms`);
 }
 
 async function loadTest(params: LoadParameters) {
@@ -229,5 +249,26 @@ describe('nodes agree on state when under load with a coordinator available', ()
                 assert.match(result, /OK/);
             });
         });        
+    });
+
+    describe('adding a node to the cluster', () => {
+        const originalConfig = readFileSync(CLUSTER_CONFIG, 'utf8');
+        after(() => {
+            writeFileSync(CLUSTER_CONFIG, originalConfig);
+        });
+
+        it('catches the new node up so every available node reports the same key count', async () => {
+            for (let i = 0; i < 10; i++) {
+                await call('set', { key: `join-key-${i}`, value: `join-value-${i}` });
+            }
+            const stdout = await call('cluster', {
+                subcommand: 'add',
+                target: 'http://127.0.0.1:8007',
+                cluster: CLUSTER_CONFIG,
+            });
+            const added = JSON.parse(stdout) as { url: string };
+            await waitUntilAvailable(added.url);
+            await assertKeysAreEqualAcrossNodes();
+        });
     });
 })

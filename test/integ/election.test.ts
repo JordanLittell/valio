@@ -48,7 +48,7 @@ async function startCluster(size: number): Promise<Cluster> {
           if (typeof value === 'number') leadership.adopt(value, epoch);
         },
       });
-      const replication = createReplication(node, new MemoryStore(), leadership);
+      const replication = await createReplication(node, new MemoryStore(), leadership);
       const app = createApp(replication.store, {
         node,
         internalRouters: [replication.router, election.router],

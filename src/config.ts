@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 export const DEFAULT_CLUSTER_PATH = 'cluster.json';
@@ -108,4 +108,9 @@ export function nodeConfig(config: ClusterConfig, id: number): NodeConfig {
     peers: config.nodes.filter((n) => n.id !== id),
     port: port ? Number(port) : 80,
   };
+}
+
+export function saveClusterConfig(path: string, config: ClusterConfig): void {
+  const file = resolve(path);
+  writeFileSync(file, JSON.stringify({ nodes: config.nodes }, null, 2) + '\n');
 }
