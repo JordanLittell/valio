@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 
 export const DEFAULT_CLUSTER_PATH = 'cluster.json';
 
-export type NodeInfo = { id: number; url: string; coordinator: boolean };
+export type NodeInfo = { id: number; url: string };
 
 export type ClusterConfig = { nodes: NodeInfo[] };
 
@@ -40,9 +40,9 @@ export function loadClusterConfig(path: string = DEFAULT_CLUSTER_PATH): ClusterC
 }
 
 /**
- * Validates a cluster config. Node ids must be exactly 0..N-1 (later used for
- * ballot numbering), every node must have a unique http:// origin URL, and
- * exactly one node must be the coordinator.
+ * Validates a cluster config. Node ids must be exactly 0..N-1 (used for ballot
+ * numbering) and every node must have a unique http:// origin URL. Who leads is
+ * decided at runtime, not in this file.
  */
 export function parseClusterConfig(raw: unknown, source = 'cluster config'): ClusterConfig {
   const invalid = (message: string) => new ClusterConfigError(`${source}: ${message}`);
@@ -55,13 +55,12 @@ export function parseClusterConfig(raw: unknown, source = 'cluster config'): Clu
   const seenUrls = new Set<string>();
   for (const [i, entry] of (raw.nodes as unknown[]).entries()) {
     if (typeof entry !== 'object' || entry === null) throw invalid(`nodes[${i}] must be an object`);
-    const { id, url, coordinator } = entry as Record<string, unknown>;
+    const { id, url } = entry as Record<string, unknown>;
 
     if (typeof id !== 'number' || !Number.isInteger(id) || id < 0) {
       throw invalid(`nodes[${i}].id must be a non-negative integer`);
     }
     if (typeof url !== 'string') throw invalid(`nodes[${i}].url must be a string`);
-    if (typeof coordinator !== 'boolean') throw invalid(`nodes[${i}].coordinator must be a boolean`);
 
     let parsed: URL;
     try {
@@ -76,7 +75,7 @@ export function parseClusterConfig(raw: unknown, source = 'cluster config'): Clu
     if (seenUrls.has(parsed.origin)) throw invalid(`duplicate url ${parsed.origin}`);
     seenUrls.add(parsed.origin);
 
-    nodes.push({ id, url: parsed.origin, coordinator: coordinator as boolean });
+    nodes.push({ id, url: parsed.origin });
   }
 
   nodes.sort((a, b) => a.id - b.id);
@@ -84,15 +83,6 @@ export function parseClusterConfig(raw: unknown, source = 'cluster config'): Clu
     throw invalid(`node ids must be unique and numbered 0..${nodes.length - 1} (got ${nodes.map((n) => n.id).join(', ')})`);
   }
 
-  const coordinators = nodes.filter((n) => n.coordinator);
-  if (coordinators.length === 0) {
-    throw invalid('exactly one node must have "coordinator": true, but none does');
-  }
-  if (coordinators.length > 1) {
-    throw invalid(
-      `exactly one node must have "coordinator": true, but nodes ${coordinators.map((n) => n.id).join(', ')} do`,
-    );
-  }
   return { nodes };
 }
 

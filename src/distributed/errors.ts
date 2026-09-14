@@ -1,9 +1,9 @@
-/** A write reached a node that is not the coordinator. */
+/** A write reached a node that is not the current leader. */
 export class NotCoordinatorError extends Error {
-  readonly coordinatorUrl: string;
+  readonly coordinatorUrl: string | null;
 
-  constructor(coordinatorUrl: string) {
-    super(`not the coordinator; send writes to ${coordinatorUrl}`);
+  constructor(coordinatorUrl: string | null) {
+    super(coordinatorUrl ? `not the coordinator; send writes to ${coordinatorUrl}` : 'not the coordinator; no leader elected yet');
     this.name = 'NotCoordinatorError';
     this.coordinatorUrl = coordinatorUrl;
   }

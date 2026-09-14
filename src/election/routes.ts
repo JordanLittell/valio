@@ -7,22 +7,22 @@ export const PREPARE_PATH = '/internal/election/prepare';
 export const ACCEPT_PATH = '/internal/election/accept';
 export const LEARN_PATH = '/internal/election/learn';
 
-function hasBallot(value: unknown, type: string): boolean {
+function isMessage(value: unknown, type: string): boolean {
   if (typeof value !== 'object' || value === null) return false;
   const message = value as Record<string, unknown>;
   return message.type === type && Number.isInteger(message.id);
 }
 
 function isPrepare(value: unknown): value is PrepareMessage {
-  return hasBallot(value, 'PREPARE');
+  return isMessage(value, 'PREPARE');
 }
 
 function isAccept(value: unknown): value is AcceptMessage {
-  return hasBallot(value, 'ACCEPT') && 'value' in (value as object);
+  return isMessage(value, 'ACCEPT') && 'value' in (value as object);
 }
 
 function isAccepted(value: unknown): value is AcceptedMessage {
-  return hasBallot(value, 'ACCEPTED') && 'value' in (value as object) && Number.isInteger((value as AcceptedMessage).nodeId);
+  return isMessage(value, 'ACCEPTED') && 'value' in (value as object) && Number.isInteger((value as AcceptedMessage).nodeId);
 }
 
 /** Peer-to-peer Paxos endpoints. Every node serves all of them: each is accepter and learner. */

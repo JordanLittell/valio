@@ -2,6 +2,7 @@ import express from 'express';
 import type { NextFunction, Request, Response, Router } from 'express';
 import type { NodeConfig } from './config.ts';
 import { NotCoordinatorError, TxAbortedError } from './distributed/errors.ts';
+import type { Leadership } from './leadership/state.ts';
 import type { KVStore } from './store.ts';
 import type { JsonValue, StatusResponse } from './types.ts';
 
@@ -12,9 +13,11 @@ export type AppOptions = {
   node?: NodeConfig | undefined;
   /** Peer-to-peer routes (e.g. 2PC, leader election), mounted before the client routes. */
   internalRouters?: Router[] | undefined;
+  /** Live view of who leads; /status and write redirects read this. */
+  leadership?: Leadership | undefined;
 };
 
-export function createApp(store: KVStore, { node, internalRouters }: AppOptions = {}): express.Express {
+export function createApp(store: KVStore, { node, internalRouters, leadership }: AppOptions = {}): express.Express {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
   for (const router of internalRouters ?? []) app.use(router);
@@ -26,7 +29,8 @@ export function createApp(store: KVStore, { node, internalRouters }: AppOptions 
   app.get('/status', async (_req, res) => {
     const status: StatusResponse = {
       id: node?.self.id ?? null,
-      isCoordinator: node?.self.coordinator === true,
+      isCoordinator: leadership?.isLeader() === true,
+      leaderId: leadership?.leaderId ?? null,
       url: node?.self.url ?? null,
       peers: node?.peers.map((p) => p.id) ?? [],
       pid: process.pid,
@@ -82,6 +86,10 @@ export function createApp(store: KVStore, { node, internalRouters }: AppOptions 
 
   app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof NotCoordinatorError) {
+      if (!err.coordinatorUrl) {
+        res.status(503).set('Retry-After', '1').json({ error: err.message });
+        return;
+      }
       const location = err.coordinatorUrl + req.originalUrl;
       res.status(307).location(location).json({ error: err.message, location });
       return;

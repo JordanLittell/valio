@@ -12,10 +12,13 @@ import type { AcceptedMessage } from './types.ts';
 export class Learner {
   #log: Map<number, { nodeId: number; value: JsonValue }[]>;
   #quorum: number;
+  readonly #onConsensus: ((value: JsonValue) => void) | undefined;
+  #announced = false;
 
-  constructor(quorum: number) {
+  constructor(quorum: number, onConsensus?: (value: JsonValue) => void) {
     this.#log = new Map();
     this.#quorum = quorum;
+    this.#onConsensus = onConsensus;
   }
 
   async learn(message: AcceptedMessage): Promise<JsonValue | undefined> {
@@ -28,7 +31,14 @@ export class Learner {
     } else {
       entries.push({ nodeId: message.nodeId, value: message.value });
     }
-    return this.consensus();
+
+    const value = this.consensus();
+    // Announce once: the same value keeps arriving as the remaining accepters report in.
+    if (value !== undefined && !this.#announced) {
+      this.#announced = true;
+      this.#onConsensus?.(value);
+    }
+    return value;
   }
 
   /**

@@ -19,7 +19,10 @@ export type StatusResponse = {
   pid: number;
   uptimeMs: number;
   keys: number;
+  /** True when this node currently leads. Runtime, not config. */
   isCoordinator: boolean;
+  /** Node id of the current leader; null when none is known. */
+  leaderId: number | null;
 };
 
 /** Output of `valio cluster describe`: node id -> that node's status block. */

@@ -17,13 +17,13 @@ export class Accepter {
   // if messages come in larger than this, we should respond with a NAK message
   #promisedId: number | undefined;
   /** The proposal we last accepted. Reported in promises so a later proposer can carry it forward. */
-  #accepted: Accepted | undefined;
+  #accepted: Accepted | null;
   readonly #broadcastToLearners: LearnerBroadcast;
 
   constructor(nodeId: number, broadcastToLearners: LearnerBroadcast) {
     this.nodeId = nodeId;
     this.#promisedId = undefined;
-    this.#accepted = undefined;
+    this.#accepted = null;
     this.#broadcastToLearners = broadcastToLearners;
   }
 
@@ -51,7 +51,7 @@ export class Accepter {
     return {
       type: 'PROMISE',
       id: message.id,
-      accepted: this.#accepted ?? null,
+      accepted: this.#accepted,
     };
   }
 

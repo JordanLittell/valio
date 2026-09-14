@@ -1,13 +1,14 @@
 import type { Router } from 'express';
 import type { NodeConfig, NodeInfo } from '../config.ts';
 import { post } from '../distributed/peer.ts';
+import type { JsonValue } from '../types.ts';
 import { Accepter } from './accepter.ts';
 import { Learner } from './learner.ts';
 import { Proposer } from './proposer.ts';
 import { electionRouter, LEARN_PATH } from './routes.ts';
 import type { AcceptedMessage } from './types.ts';
 
-export { Accepter } from './accepter.ts';
+export { Accepter, type LearnerBroadcast } from './accepter.ts';
 export { Learner } from './learner.ts';
 export { Proposer, type ProposalResult } from './proposer.ts';
 export { ACCEPT_PATH, LEARN_PATH, PREPARE_PATH } from './routes.ts';
@@ -19,13 +20,18 @@ export type Election = {
   router: Router;
 };
 
+export type ElectionOptions = {
+  /** Called once when a quorum is known to have accepted a value. */
+  onConsensus?: ((value: JsonValue) => void) | undefined;
+};
+
 /**
  * Every node runs all three Paxos roles, so there is no separate membership list
  * per role: the cluster's peer list is the accepter list and the learner list.
  */
-export function createElection(node: NodeConfig): Election {
+export function createElection(node: NodeConfig, options: ElectionOptions = {}): Election {
   const quorum = Math.floor(node.nodes.length / 2) + 1;
-  const learner = new Learner(quorum);
+  const learner = new Learner(quorum, options.onConsensus);
   const accepter = new Accepter(node.self.id, (message) => {
     // Not awaited: the proposer's ACCEPTED answer must not wait on the learner fan-out.
     broadcastAccepted(node.peers, learner, message).catch((err: unknown) => {
