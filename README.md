@@ -11,6 +11,7 @@ npm run cluster          # start every node in cluster.json
 
 ## CLI
 
+### DataStore Commands
 By default `valio` uses `cluster.json` (or `$VALIO_CLUSTER`) and fails over across nodes. `--url` or `--node` pins a command to one server.
 
 ```bash
@@ -29,7 +30,7 @@ node src/cli.ts status --json
 node src/cli.ts set obj '{"a":1}' --json
 ```
 
-### Cluster
+### Cluster Administration
 
 ```bash
 node src/cli.ts cluster describe
