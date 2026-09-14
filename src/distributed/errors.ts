@@ -11,7 +11,7 @@ export class NotCoordinatorError extends Error {
 
 export type Blocker = { id: number; reason: string };
 
-/** At least one participant voted no (or never answered), so the transaction was aborted. */
+/** A majority of participants did not vote yes, so the transaction was aborted. */
 export class TxAbortedError extends Error {
   readonly txId: string;
   readonly blockedBy: Blocker[];

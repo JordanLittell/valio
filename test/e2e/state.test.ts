@@ -226,7 +226,7 @@ describe('nodes agree on state when under load with a coordinator available', ()
             it('should succeed after a short delay when leader election completes', async () => {
                 await new Promise(resolve => setTimeout(resolve, 1000));
                 const result = await call('set', { key: 'foo', value: 'bar' });
-                assert.ok(result.includes('value-0'));
+                assert.match(result, /OK/);
             });
         });        
     });

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import type { Server } from 'node:http';
+import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { describe, it } from 'node:test';
 import { createApp } from '../../src/app.ts';
@@ -105,6 +105,91 @@ describe('replication roles', () => {
       assert.equal(followerStatus.leaderId, 0);
     } finally {
       await Promise.all([leader.close(), follower.close()]);
+    }
+  });
+});
+
+async function freePorts(count: number): Promise<number[]> {
+  const probes = await Promise.all(
+    Array.from({ length: count }, () =>
+      new Promise<Server>((resolve) => {
+        const probe = createServer().listen(0, '127.0.0.1', () => resolve(probe));
+      }),
+    ),
+  );
+  const ports = probes.map((probe) => (probe.address() as AddressInfo).port);
+  await Promise.all(probes.map((probe) => new Promise<void>((resolve) => probe.close(() => resolve()))));
+  return ports;
+}
+
+type LiveNode = { id: number; url: string; close: () => Promise<void> };
+
+/** Real listeners so 2PC has reachable peers (unlike startNode's placeholder URLs). */
+async function startLiveCluster(size: number): Promise<{ nodes: LiveNode[]; close: () => Promise<void> }> {
+  const ports = await freePorts(size);
+  const config = parseClusterConfig({
+    nodes: ports.map((port, id) => ({ id, url: `http://127.0.0.1:${port}` })),
+  });
+  const nodes = await Promise.all(
+    ports.map(async (port, id): Promise<LiveNode> => {
+      const node = nodeConfig(config, id);
+      const leadership = new Leadership(node.self, node.nodes);
+      leadership.adopt(0);
+      const replication = createReplication(node, new MemoryStore(), leadership);
+      const app = createApp(replication.store, {
+        node,
+        internalRouters: [replication.router],
+        leadership,
+      });
+      const server: Server = await new Promise((resolve) => {
+        const s = app.listen(port, '127.0.0.1', () => resolve(s));
+      });
+      return {
+        id,
+        url: node.self.url,
+        close: () =>
+          new Promise((resolve) => {
+            server.closeAllConnections();
+            server.close(() => resolve());
+          }),
+      };
+    }),
+  );
+  return { nodes, close: async () => void (await Promise.all(nodes.map((n) => n.close()))) };
+}
+
+async function put(url: string, key: string, value: string): Promise<Response> {
+  return fetch(`${url}/kv/${key}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ value }),
+  });
+}
+
+describe('majority commit', () => {
+  it('commits a write when a minority of nodes are down', async () => {
+    const cluster = await startLiveCluster(3);
+    try {
+      await cluster.nodes[2]!.close();
+      const leader = cluster.nodes[0]!;
+      const res = await put(leader.url, 'k', 'v');
+      assert.equal(res.status, 200);
+      assert.equal(((await (await fetch(`${leader.url}/kv/k`)).json()) as { value: string }).value, 'v');
+      assert.equal(((await (await fetch(`${cluster.nodes[1]!.url}/kv/k`)).json()) as { value: string }).value, 'v');
+    } finally {
+      await cluster.close();
+    }
+  });
+
+  it('aborts when a majority of nodes are unreachable', async () => {
+    const cluster = await startLiveCluster(3);
+    try {
+      await Promise.all([cluster.nodes[1]!.close(), cluster.nodes[2]!.close()]);
+      const res = await put(cluster.nodes[0]!.url, 'k', 'v');
+      assert.equal(res.status, 503);
+      assert.match(((await res.json()) as { error: string }).error, /aborted/);
+    } finally {
+      await cluster.close();
     }
   });
 });

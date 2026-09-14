@@ -7,19 +7,21 @@ import type { CommitResponse, DecisionRequest, Event, PrepareRequest, Tx, Vote }
 
 /**
  * 2PC coordinator. Runs one transaction at a time across every node in the
- * cluster (itself included, via its local participant). Strict: every node
- * must vote yes or the transaction aborts.
+ * cluster (itself included, via its local participant). Commits when a majority
+ * vote yes; a down node is a no, not a veto.
  */
 export class Coordinator {
   readonly self: NodeInfo;
   readonly peers: NodeInfo[];
   readonly local: Participant;
+  readonly #quorum: number;
   #chain: Promise<unknown> = Promise.resolve();
 
   constructor(self: NodeInfo, peers: NodeInfo[], local: Participant) {
     this.self = self;
     this.peers = peers;
     this.local = local;
+    this.#quorum = Math.floor((peers.length + 1) / 2) + 1;
   }
 
   /** Replicates event to every node. Resolves with the event's result; rejects with TxAbortedError. */
@@ -42,19 +44,22 @@ export class Coordinator {
       }),
     );
 
+    const votes: [number, Vote][] = [[this.self.id, localVote], ...peerVotes];
     const blockedBy: Blocker[] = [];
-    for (const [id, vote] of [[this.self.id, localVote] as [number, Vote], ...peerVotes]) {
-      if (vote.vote === 'no') blockedBy.push({ id, reason: vote.reason });
+    let yes = 0;
+    for (const [id, vote] of votes) {
+      if (vote.vote === 'yes') yes++;
+      else blockedBy.push({ id, reason: vote.reason });
     }
 
-    // Phase 2: abort if anyone said no
-    if (blockedBy.length > 0) {
+    // Phase 2: abort unless a majority voted yes
+    if (yes < this.#quorum) {
       this.local.abort(tx.id);
       await this.#broadcast('abort', tx.id);
       throw new TxAbortedError(tx.id, blockedBy);
     }
 
-    // Phase 2: commit. Every node voted yes, so the decision is final from here on.
+    // Phase 2: commit. A majority voted yes; nodes that said no are skipped (unknown tx).
     const committed = await this.local.commit(tx.id);
     // Cannot happen while writes are serialized: we staged this tx ourselves above.
     if (!committed.ok) throw new Error(`local commit failed: ${committed.reason}`);

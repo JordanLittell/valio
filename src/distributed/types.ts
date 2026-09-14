@@ -15,7 +15,8 @@ export type Tx = {
 };
 
 /**
- * A participant's answer to PREPARE. A "no" vote aborts the transaction on every node.
+ * A participant's answer to PREPARE. The coordinator commits when a majority
+ * vote yes; a "no" (or silence) simply does not count toward that majority.
  *
  * Why a vote may be "no":
  * - busy: the participant already holds a different staged tx. It voted yes on an
