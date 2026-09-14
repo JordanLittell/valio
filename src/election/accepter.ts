@@ -13,49 +13,40 @@ export type LearnerBroadcast = (message: AcceptedMessage) => void;
 
 export class Accepter {
   readonly nodeId: number;
-  // the id of the current message we have promised to accept
-  // if messages come in larger than this, we should respond with a NAK message
+  #epoch = 0;
   #promisedId: number | undefined;
-  /** The proposal we last accepted. Reported in promises so a later proposer can carry it forward. */
-  #accepted: Accepted | null;
+  #accepted: Accepted | null = null;
   readonly #broadcastToLearners: LearnerBroadcast;
 
   constructor(nodeId: number, broadcastToLearners: LearnerBroadcast) {
     this.nodeId = nodeId;
-    this.#promisedId = undefined;
-    this.#accepted = null;
     this.#broadcastToLearners = broadcastToLearners;
   }
 
   /**
-   *
-   * @param message - The prepare message to respond to
-   * If the acceptor had already seen a larger message, it should respond with a NAK message.
-   * Otherwise, it should respond with a promise message.
-   * This places a lock on the accepter for the duration of the election.
-   * That is, no other proposer can make progress until this election is resolved.
-   * @returns The promise message
+   * If this epoch is stale, NAK. A higher epoch is a new Paxos instance: drop the
+   * previous accepted value so a new leader id can be chosen.
    */
   async promise(message: PrepareMessage): Promise<PromiseMessage | NAKMessage> {
+    if (!this.#join(message.epoch ?? 0)) {
+      return { type: 'NAK', id: this.#promisedId ?? 0, reason: 'stale epoch' };
+    }
     if (this.#promisedId !== undefined && message.id < this.#promisedId) {
       return {
         type: 'NAK',
-        // Our promised ballot, not theirs: it tells the proposer how high it has to go to win.
         id: this.#promisedId,
         reason: 'Larger message already seen',
       };
     }
 
     this.#promisedId = message.id;
-
-    return {
-      type: 'PROMISE',
-      id: message.id,
-      accepted: this.#accepted,
-    };
+    return { type: 'PROMISE', id: message.id, accepted: this.#accepted };
   }
 
   async accept(message: AcceptMessage): Promise<AcceptedMessage | RejectMessage> {
+    if (!this.#join(message.epoch ?? 0)) {
+      return { type: 'REJECT', id: this.#promisedId ?? 0, reason: 'stale epoch' };
+    }
     if (this.#promisedId !== undefined && message.id < this.#promisedId) {
       return {
         type: 'REJECT',
@@ -72,12 +63,21 @@ export class Accepter {
     const result: AcceptedMessage = {
       type: 'ACCEPTED',
       id: message.id,
+      epoch: message.epoch ?? 0,
       nodeId: this.nodeId,
       value: message.value,
     };
-
     this.#broadcastToLearners(result);
-
     return result;
+  }
+
+  #join(epoch: number): boolean {
+    if (epoch < this.#epoch) return false;
+    if (epoch > this.#epoch) {
+      this.#epoch = epoch;
+      this.#promisedId = undefined;
+      this.#accepted = null;
+    }
+    return true;
   }
 }

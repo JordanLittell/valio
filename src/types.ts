@@ -25,5 +25,24 @@ export type StatusResponse = {
   leaderId: number | null;
 };
 
+/** Unreachable or otherwise unqueryable node in `valio cluster describe` output. */
+export type UnavailableNodeStatus = {
+  id: number;
+  url: string;
+  unavailable: true;
+  error: string;
+};
+
+/** One node's entry in `valio cluster describe`: live /status, or an unavailable marker. */
+export type NodeDescription = StatusResponse | UnavailableNodeStatus;
+
 /** Output of `valio cluster describe`: node id -> that node's status block. */
-export type ClusterDescription = Record<string, StatusResponse>;
+export type ClusterDescription = Record<string, NodeDescription>;
+
+export function isUnavailableNode(node: NodeDescription): node is UnavailableNodeStatus {
+  return 'unavailable' in node && node.unavailable === true;
+}
+
+export function isAvailableNode(node: NodeDescription): node is StatusResponse {
+  return !isUnavailableNode(node);
+}

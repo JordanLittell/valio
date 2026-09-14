@@ -4,6 +4,8 @@ import type { NodeInfo } from '../config.ts';
 export type LeaderView = {
   leaderId: number | null;
   leaderUrl: string | null;
+  /** Paxos instance that chose this leader. 0 until the first election. */
+  epoch: number;
 };
 
 /**
@@ -15,6 +17,7 @@ export class Leadership {
   readonly self: NodeInfo;
   readonly nodes: NodeInfo[];
   #leaderId: number | null = null;
+  #epoch = 0;
   readonly #listeners: ((view: LeaderView) => void)[] = [];
 
   constructor(self: NodeInfo, nodes: NodeInfo[]) {
@@ -24,6 +27,10 @@ export class Leadership {
 
   get leaderId(): number | null {
     return this.#leaderId;
+  }
+
+  get epoch(): number {
+    return this.#epoch;
   }
 
   isLeader(): boolean {
@@ -37,21 +44,26 @@ export class Leadership {
   }
 
   view(): LeaderView {
-    return { leaderId: this.#leaderId, leaderUrl: this.leaderUrl() };
+    return { leaderId: this.#leaderId, leaderUrl: this.leaderUrl(), epoch: this.#epoch };
   }
 
   /**
-   * Records the elected leader. A later adopt of the same id is a no-op. Adopting
-   * a different id after one is already set is ignored: this is single-decree
-   * Paxos, so the first value that stuck is the only legal one.
+   * Records the elected leader for `epoch`. A later adopt of the same id at the
+   * same epoch is a no-op. Adopting a different id at the same epoch is ignored:
+   * that instance of Paxos already chose. A higher epoch replaces the leader
+   * (re-election after failure).
    * @returns true if the view changed
    */
-  adopt(leaderId: number): boolean {
+  adopt(leaderId: number, epoch = 1): boolean {
     if (!this.nodes.some((node) => node.id === leaderId)) {
       throw new Error(`node ${leaderId} is not in the cluster`);
     }
-    if (this.#leaderId === leaderId) return false;
-    if (this.#leaderId !== null) return false;
+    if (epoch < this.#epoch) return false;
+    if (epoch === this.#epoch) {
+      if (this.#leaderId === leaderId) return false;
+      if (this.#leaderId !== null) return false;
+    }
+    this.#epoch = epoch;
     this.#leaderId = leaderId;
     const view = this.view();
     for (const listener of this.#listeners) listener(view);

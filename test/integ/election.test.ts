@@ -44,8 +44,8 @@ async function startCluster(size: number): Promise<Cluster> {
       const node = nodeConfig(config, id);
       const leadership = new Leadership(node.self, node.nodes);
       const election = createElection(node, {
-        onConsensus: (value) => {
-          if (typeof value === 'number') leadership.adopt(value);
+        onConsensus: (value, epoch) => {
+          if (typeof value === 'number') leadership.adopt(value, epoch);
         },
       });
       const replication = createReplication(node, new MemoryStore(), leadership);
@@ -103,6 +103,16 @@ async function waitForLeader(node: Node, timeoutMs = 2000): Promise<number> {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.fail(`node ${node.id} never learned a leader`);
+}
+
+async function waitForLeaderNot(node: Node, notId: number, timeoutMs = 2000): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const id = node.leadership.leaderId;
+    if (id !== null && id !== notId) return id;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail(`node ${node.id} never replaced leader ${notId}`);
 }
 
 describe('paxos proposal over the network', () => {
@@ -219,6 +229,29 @@ describe('runtime leader election', () => {
       });
       assert.equal(res.status, 307);
       assert.equal(res.headers.get('location'), `${leader.url}/kv/k`);
+    } finally {
+      await cluster.close();
+    }
+  });
+
+  it('a higher epoch can elect a different leader after the current one is killed', async () => {
+    const cluster = await startCluster(3);
+    try {
+      await Promise.all(
+        cluster.nodes.map((node) => new Elector(node.election.proposer.self, node.election.proposer, node.leadership).elect()),
+      );
+      const first = await waitForLeader(cluster.nodes[0]!);
+      await cluster.nodes.find((node) => node.id === first)!.close();
+
+      const survivor = cluster.nodes.find((node) => node.id !== first)!;
+      const epoch = survivor.leadership.epoch + 1;
+      const result = await survivor.election.proposer.propose(survivor.id, epoch);
+      assert.equal(result.chosen, true);
+      assert.notEqual(result.value, first);
+
+      for (const node of cluster.nodes.filter((node) => node.id !== first)) {
+        assert.equal(await waitForLeaderNot(node, first), result.value);
+      }
     } finally {
       await cluster.close();
     }

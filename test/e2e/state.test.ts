@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import type { ClusterDescription } from '../../src/types.ts';
+import { isAvailableNode, isUnavailableNode, type ClusterDescription, type StatusResponse } from '../../src/types.ts';
 
 const CLI = fileURLToPath(new URL('../../src/cli.ts', import.meta.url));
 const CLUSTER_CONFIG = fileURLToPath(new URL('../../cluster.json', import.meta.url));
@@ -108,7 +108,9 @@ async function describeCluster(): Promise<ClusterDescription> {
 /** Every node should hold the same number of keys once the load has replicated. */
 async function assertKeysAreEqualAcrossNodes(): Promise<void> {
     const description = await describeCluster();
-    const counts = Object.entries(description).map(([id, status]) => ({ id, keys: status.keys }));
+    const counts = Object.entries(description)
+        .filter((entry): entry is [string, StatusResponse] => isAvailableNode(entry[1]))
+        .map(([id, status]) => ({ id, keys: status.keys }));
 
     if (counts.length === 0) {
         throw new Error('cluster describe returned no nodes');
@@ -180,7 +182,7 @@ describe('nodes agree on state when under load with a coordinator available', ()
         before(async () => {
             const description = await describeCluster();
             for (const [nodeId, nodeStatus] of Object.entries(description)) {
-                if (!nodeStatus.isCoordinator) {
+                if (isUnavailableNode(nodeStatus) || !nodeStatus.isCoordinator) {
                     continue;
                 }
                 process.kill(nodeStatus.pid);
@@ -189,6 +191,19 @@ describe('nodes agree on state when under load with a coordinator available', ()
             }
         });
         
+        it('should report unreachable nodes as unavailable without failing', async () => {
+            const description = await describeCluster();
+            const unavailable = Object.values(description).filter(isUnavailableNode);
+            assert.ok(unavailable.length >= 1, 'expected at least one unavailable node after killing the coordinator');
+            for (const node of unavailable) {
+                assert.equal(node.unavailable, true);
+                assert.ok(node.url.length > 0);
+                assert.ok(node.error.length > 0);
+            }
+            const live = Object.values(description).filter(isAvailableNode);
+            assert.ok(live.length >= 1, 'expected remaining nodes to still be described');
+        });
+
         describe('when the request is a read', () => {
             it('should complete successfully and return the correct value', async () => {
                 const result = await call('get', { key: 'key-0' });
@@ -197,7 +212,7 @@ describe('nodes agree on state when under load with a coordinator available', ()
         });
 
         describe('when the request is a write', () => {
-            it('should fail with a coordinator unavailable error', async () => {
+            it('should fail immedate requests with a coordinator unavailable error', async () => {
                 const failure = await call('set', { key: 'foo', value: 'bar' }).then(
                     (stdout) => {
                         throw new Error(`expected set to fail, got: ${stdout}`);
@@ -206,6 +221,12 @@ describe('nodes agree on state when under load with a coordinator available', ()
                 );
                 assert.equal(failure.code, 2);
                 assert.match(failure.reason, /coordinator unavailable/);
+            });
+
+            it('should succeed after a short delay when leader election completes', async () => {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                const result = await call('set', { key: 'foo', value: 'bar' });
+                assert.ok(result.includes('value-0'));
             });
         });        
     });

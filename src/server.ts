@@ -42,8 +42,8 @@ const local = new MemoryStore();
 const leadership = node ? new Leadership(node.self, node.nodes) : undefined;
 const election = node
   ? createElection(node, {
-      onConsensus: (value) => {
-        if (typeof value === 'number') leadership!.adopt(value);
+      onConsensus: (value, epoch) => {
+        if (typeof value === 'number') leadership!.adopt(value, epoch);
       },
     })
   : undefined;
@@ -63,12 +63,14 @@ const server = app.listen(port, host, (err?: Error) => {
   leadership.onChange((view) => {
     console.log(`${name} leader is node ${view.leaderId}${leadership.isLeader() ? ' (this node)' : ''}`);
   });
+  elector.start();
   elector.elect().catch((electErr: unknown) => {
     console.error(`${name} election failed: ${(electErr as Error).message}`);
   });
 });
 
 function shutdown(): void {
+  elector?.stop();
   server.close(() => process.exit(0));
   server.closeAllConnections();
 }

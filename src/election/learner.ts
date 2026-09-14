@@ -12,16 +12,25 @@ import type { AcceptedMessage } from './types.ts';
 export class Learner {
   #log: Map<number, { nodeId: number; value: JsonValue }[]>;
   #quorum: number;
-  readonly #onConsensus: ((value: JsonValue) => void) | undefined;
+  #epoch = 0;
+  readonly #onConsensus: ((value: JsonValue, epoch: number) => void) | undefined;
   #announced = false;
 
-  constructor(quorum: number, onConsensus?: (value: JsonValue) => void) {
+  constructor(quorum: number, onConsensus?: (value: JsonValue, epoch: number) => void) {
     this.#log = new Map();
     this.#quorum = quorum;
     this.#onConsensus = onConsensus;
   }
 
   async learn(message: AcceptedMessage): Promise<JsonValue | undefined> {
+    const epoch = message.epoch ?? 0;
+    if (epoch < this.#epoch) return this.consensus();
+    if (epoch > this.#epoch) {
+      this.#epoch = epoch;
+      this.#log = new Map();
+      this.#announced = false;
+    }
+
     const entries = this.#log.get(message.id) ?? [];
     if (entries.length === 0) this.#log.set(message.id, entries);
     // One vote per node: a redelivered ACCEPTED must not count twice toward the quorum.
@@ -36,7 +45,7 @@ export class Learner {
     // Announce once: the same value keeps arriving as the remaining accepters report in.
     if (value !== undefined && !this.#announced) {
       this.#announced = true;
-      this.#onConsensus?.(value);
+      this.#onConsensus?.(value, this.#epoch);
     }
     return value;
   }

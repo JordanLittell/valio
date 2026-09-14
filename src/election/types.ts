@@ -6,6 +6,8 @@ export type Accepted = { id: number; value: JsonValue };
 export type PrepareMessage = {
   type: 'PREPARE';
   id: number; // the ballot this proposer is asking accepters to promise
+  /** Paxos instance. Missing means 0, the first election. */
+  epoch?: number;
 };
 
 export type PromiseMessage = {
@@ -29,12 +31,14 @@ export type NAKMessage = {
 export type AcceptMessage = {
   type: 'ACCEPT';
   id: number; // the ballot the proposer holds promises for
+  epoch?: number;
   value: JsonValue; // the value the proposer wants accepted
 };
 
 export type AcceptedMessage = {
   type: 'ACCEPTED';
   id: number; // the ballot that was accepted
+  epoch?: number;
   nodeId: number; // the id of the node that accepted the message
   value: JsonValue; // the value that the node accepted
 };

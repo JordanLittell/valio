@@ -2,7 +2,7 @@
 import { parseArgs } from 'node:util';
 import { ValioClient, ValioHttpError, ValioUnavailableError } from './client.ts';
 import { ClusterConfigError, DEFAULT_CLUSTER_PATH, findNode, loadClusterConfig, parseNodeId } from './config.ts';
-import type { ClusterDescription, JsonValue, StatusResponse } from './types.ts';
+import type { ClusterDescription, JsonValue, StatusResponse, UnavailableNodeStatus } from './types.ts';
 
 const USAGE = `Usage: valio [--url URL | --node ID] [--cluster PATH] [--json] <command>
 
@@ -13,7 +13,7 @@ Commands:
   list                   Print all keys and values (with --json, as a JSON object)
   clear                  Clear the store
   status                 Show the target node's status
-  cluster describe       Print every node's status block as JSON, keyed by node id
+  cluster describe       Print every node's status as JSON; unreachable nodes are marked unavailable
 
 By default commands target every node in the cluster config, failing over to the
 next node when one is unreachable. --url and --node pin the command to one node.
@@ -206,25 +206,27 @@ async function queryCluster(clusterPath: string): Promise<NodeReport[]> {
 }
 
 /**
- * Prints `{"<node id>": <status block>}` for the whole cluster. Exits 2 without
- * printing if any node failed, so callers never parse a partial description.
+ * Prints `{"<node id>": <status block>}` for the whole cluster. Unreachable
+ * nodes are included as `{ unavailable: true }` so the command still succeeds
+ * and callers always get a full description.
  */
 async function describeCluster(clusterPath: string): Promise<number> {
   const description: ClusterDescription = {};
-  const failures: string[] = [];
 
   for (const report of await queryCluster(clusterPath)) {
     if (report.state === 'up' && report.status) {
       description[String(report.id)] = report.status;
     } else {
-      failures.push(`node ${report.id} (${report.url}): ${report.error ?? report.state}`);
+      const unavailable: UnavailableNodeStatus = {
+        id: report.id,
+        url: report.url,
+        unavailable: true,
+        error: report.error ?? report.state,
+      };
+      description[String(report.id)] = unavailable;
     }
   }
 
-  if (failures.length > 0) {
-    console.error(failures.join('\n'));
-    return EXIT_UNAVAILABLE;
-  }
   console.log(JSON.stringify(description, null, 2));
   return EXIT_OK;
 }

@@ -56,14 +56,17 @@ export class Proposer {
    * Runs Paxos until a quorum accepts a value or the attempts run out. Resolves
    * chosen: false rather than throwing: losing a ballot race is normal and the
    * caller decides whether to try again.
+   *
+   * `epoch` is the Paxos instance. Each leader election uses a new epoch so a
+   * previously chosen leader id cannot be carried forward into a re-election.
    */
-  async propose(value: JsonValue): Promise<ProposalResult> {
+  async propose(value: JsonValue, epoch = 0): Promise<ProposalResult> {
     let reason = 'no attempts made';
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (attempt > 0) await sleep(Math.random() * RETRY_BASE_MS * 2 ** attempt);
 
       const id = this.#nextBallot();
-      const promised = await this.#prepare(id);
+      const promised = await this.#prepare(id, epoch);
       if (!promised.ok) {
         reason = promised.reason;
         continue;
@@ -72,7 +75,7 @@ export class Proposer {
       // Safety: if anyone in the quorum has already accepted a proposal, that value
       // may already be chosen, so we must carry it forward instead of our own.
       const chosenValue = promised.accepted ? promised.accepted.value : value;
-      const accepted = await this.#accept({ type: 'ACCEPT', id, value: chosenValue });
+      const accepted = await this.#accept({ type: 'ACCEPT', id, epoch, value: chosenValue });
       if (!accepted.ok) {
         reason = accepted.reason;
         continue;
@@ -83,8 +86,8 @@ export class Proposer {
   }
 
   /** Phase 1. Resolves with the highest proposal already accepted in the quorum, if any. */
-  async #prepare(id: number): Promise<{ ok: true; accepted: Accepted | null } | PhaseFailure> {
-    const message: PrepareMessage = { type: 'PREPARE', id };
+  async #prepare(id: number, epoch: number): Promise<{ ok: true; accepted: Accepted | null } | PhaseFailure> {
+    const message: PrepareMessage = { type: 'PREPARE', id, epoch };
     const replies = await this.#broadcast<PromiseMessage | NAKMessage>(PREPARE_PATH, message, () =>
       this.local.promise(message),
     );

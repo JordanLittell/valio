@@ -21,8 +21,8 @@ export type Election = {
 };
 
 export type ElectionOptions = {
-  /** Called once when a quorum is known to have accepted a value. */
-  onConsensus?: ((value: JsonValue) => void) | undefined;
+  /** Called once per epoch when a quorum is known to have accepted a value. */
+  onConsensus?: ((value: JsonValue, epoch: number) => void) | undefined;
 };
 
 /**
