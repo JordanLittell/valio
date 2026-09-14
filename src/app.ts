@@ -10,14 +10,14 @@ type KeyParams = { key: string };
 export type AppOptions = {
   /** Present when the server runs as a member of a cluster. */
   node?: NodeConfig | undefined;
-  /** Peer-to-peer routes (e.g. 2PC), mounted before the client routes. */
-  internalRouter?: Router | undefined;
+  /** Peer-to-peer routes (e.g. 2PC, leader election), mounted before the client routes. */
+  internalRouters?: Router[] | undefined;
 };
 
-export function createApp(store: KVStore, { node, internalRouter }: AppOptions = {}): express.Express {
+export function createApp(store: KVStore, { node, internalRouters }: AppOptions = {}): express.Express {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
-  if (internalRouter) app.use(internalRouter);
+  for (const router of internalRouters ?? []) app.use(router);
 
   app.get('/health', (_req, res) => {
     res.json({ ok: true });

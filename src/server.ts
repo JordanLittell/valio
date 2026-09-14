@@ -8,6 +8,7 @@ import {
   type NodeConfig,
 } from './config.ts';
 import { createReplication } from './distributed/index.ts';
+import { createElection } from './election/index.ts';
 import { MemoryStore } from './store.ts';
 
 /**
@@ -38,7 +39,11 @@ const name = node ? `node ${node.self.id}` : 'valio';
 const local = new MemoryStore();
 // TODO: replace inferring standalone mode from VALIO_NODE_ID with an explicit standalone flag.
 const replication = node ? createReplication(node, local) : undefined;
-const app = createApp(replication?.store ?? local, { node, internalRouter: replication?.router });
+// Every cluster member answers election RPCs: it is accepter, proposer, and learner.
+// Nothing proposes yet; the coordinator still comes from the cluster config.
+const election = node ? createElection(node) : undefined;
+const internalRouters = [replication?.router, election?.router].filter((router) => router !== undefined);
+const app = createApp(replication?.store ?? local, { node, internalRouters });
 
 const server = app.listen(port, host, (err?: Error) => {
   if (err) {

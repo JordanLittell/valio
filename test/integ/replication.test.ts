@@ -20,7 +20,7 @@ async function startNode(id: number): Promise<{ url: string; close: () => Promis
   const node = nodeConfig(parseClusterConfig(rawConfig([0])), id);
   const local = new MemoryStore();
   const replication = createReplication(node, local);
-  const app = createApp(replication.store, { node, internalRouter: replication.router });
+  const app = createApp(replication.store, { node, internalRouters: [replication.router] });
   const server: Server = await new Promise((resolve) => {
     const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
