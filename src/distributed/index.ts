@@ -19,12 +19,18 @@ export type Replication = {
 
 export function createReplication(node: NodeConfig, local: KVStore): Replication {
   const participant = new Participant(local);
-  const isCoordinator = node.self.id === COORDINATOR_ID;
+  console.log(JSON.stringify(node.self, null, 2));
+  const isCoordinator = node.self.leader === true;
   const coordinator = isCoordinator ? new Coordinator(node.self, node.peers, participant) : null;
-  const coordinatorUrl = findNode({ nodes: node.nodes }, COORDINATOR_ID).url;
+  const coordinatorUrl = isCoordinator ? node.self.url : ''
+  
+  if (!coordinatorUrl) {
+    console.warn('No leader found, writes will fail!');
+  }
+
   return {
     role: isCoordinator ? 'coordinator' : 'participant',
-    store: new ReplicatedStore(local, coordinator, coordinatorUrl),
+    store: new ReplicatedStore(local, coordinator, coordinatorUrl ?? ''),
     router: internalRouter(participant),
   };
 }

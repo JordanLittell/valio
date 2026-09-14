@@ -16,7 +16,8 @@
     "dev": "node --watch src/server.ts",
     "cluster": "node scripts/cluster.ts",
     "typecheck": "tsc",
-    "test": "node --test \"test/**/*.test.ts\""
+    "test": "node --test \"test/integ/*.test.ts\"",
+    "e2e": "node --test \"test/e2e/*.test.ts\""
   },
   "dependencies": {
     "express": "^5.2.1"

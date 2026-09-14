@@ -26,6 +26,7 @@ export function createApp(store: KVStore, { node, internalRouter }: AppOptions =
   app.get('/status', async (_req, res) => {
     const status: StatusResponse = {
       id: node?.self.id ?? null,
+      isLeader: node?.self.leader === true,
       url: node?.self.url ?? null,
       peers: node?.peers.map((p) => p.id) ?? [],
       pid: process.pid,

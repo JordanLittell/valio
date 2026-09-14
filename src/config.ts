@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 
 export const DEFAULT_CLUSTER_PATH = 'cluster.json';
 
-export type NodeInfo = { id: number; url: string };
+export type NodeInfo = { id: number; url: string, leader: boolean };
 
 export type ClusterConfig = { nodes: NodeInfo[] };
 
@@ -54,12 +54,13 @@ export function parseClusterConfig(raw: unknown, source = 'cluster config'): Clu
   const seenUrls = new Set<string>();
   for (const [i, entry] of (raw.nodes as unknown[]).entries()) {
     if (typeof entry !== 'object' || entry === null) throw invalid(`nodes[${i}] must be an object`);
-    const { id, url } = entry as Record<string, unknown>;
+    const { id, url, leader } = entry as Record<string, unknown>;
 
     if (typeof id !== 'number' || !Number.isInteger(id) || id < 0) {
       throw invalid(`nodes[${i}].id must be a non-negative integer`);
     }
     if (typeof url !== 'string') throw invalid(`nodes[${i}].url must be a string`);
+    if (typeof leader !== 'boolean') throw invalid(`nodes[${i}].leader must be a boolean`);
 
     let parsed: URL;
     try {
@@ -74,7 +75,7 @@ export function parseClusterConfig(raw: unknown, source = 'cluster config'): Clu
     if (seenUrls.has(parsed.origin)) throw invalid(`duplicate url ${parsed.origin}`);
     seenUrls.add(parsed.origin);
 
-    nodes.push({ id, url: parsed.origin });
+    nodes.push({ id, url: parsed.origin, leader: leader as boolean });
   }
 
   nodes.sort((a, b) => a.id - b.id);

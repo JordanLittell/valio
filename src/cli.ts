@@ -2,7 +2,7 @@
 import { parseArgs } from 'node:util';
 import { ValioClient, ValioHttpError, ValioUnavailableError } from './client.ts';
 import { ClusterConfigError, DEFAULT_CLUSTER_PATH, findNode, loadClusterConfig, parseNodeId } from './config.ts';
-import type { JsonValue, StatusResponse } from './types.ts';
+import type { ClusterDescription, JsonValue, StatusResponse } from './types.ts';
 
 const USAGE = `Usage: valio [--url URL | --node ID] [--cluster PATH] [--json] <command>
 
@@ -14,7 +14,7 @@ Commands:
   clear                  Clear the store
   status                 Show the target node's status
   cluster                Show the status of every node in the cluster config
-
+  cluster describe       Print every node's status block as JSON, keyed by node id
 Options:
   --url URL       Server URL (default: $VALIO_URL or http://localhost:3001)
   --node ID       Target a node by id from the cluster config instead of --url
@@ -25,6 +25,8 @@ Options:
 const EXIT_OK = 0;
 const EXIT_USER = 1;
 const EXIT_UNAVAILABLE = 2;
+
+const CLUSTER_OPERATIONS = ['describe'] as const;
 
 class UsageError extends Error {}
 
@@ -54,8 +56,13 @@ async function run(argv: string[]): Promise<number> {
   const clusterPath = opts.cluster ?? process.env.VALIO_CLUSTER ?? DEFAULT_CLUSTER_PATH;
 
   if (command === 'cluster') {
-    requireArgs(args, 0, 'cluster');
-    return showCluster(clusterPath, opts.json);
+    const [operation] = args;
+    if (operation === undefined) return showCluster(clusterPath, opts.json);
+    if (operation !== 'describe') {
+      throw new UsageError(`unknown cluster operation: ${operation} (supported: ${CLUSTER_OPERATIONS.join(', ')})`);
+    }
+    requireArgs(args, 1, 'cluster describe');
+    return describeCluster(clusterPath);
   }
 
   const client = new ValioClient(targetUrl(opts, clusterPath));
@@ -160,10 +167,10 @@ type NodeReport = {
   error?: string;
 };
 
-/** Queries every node in the cluster config. Exits 2 unless every node is up. */
-async function showCluster(clusterPath: string, json: boolean): Promise<number> {
+/** Asks every node in the cluster config for its status, in parallel. */
+async function queryCluster(clusterPath: string): Promise<NodeReport[]> {
   const { nodes } = loadClusterConfig(clusterPath);
-  const reports = await Promise.all(
+  return Promise.all(
     nodes.map(async ({ id, url }): Promise<NodeReport> => {
       try {
         const status = await new ValioClient(url, 1000).status();
@@ -177,6 +184,11 @@ async function showCluster(clusterPath: string, json: boolean): Promise<number> 
       }
     }),
   );
+}
+
+/** Queries every node in the cluster config. Exits 2 unless every node is up. */
+async function showCluster(clusterPath: string, json: boolean): Promise<number> {
+  const reports = await queryCluster(clusterPath);
 
   if (json) {
     console.log(JSON.stringify(reports, null, 2));
@@ -197,6 +209,30 @@ async function showCluster(clusterPath: string, json: boolean): Promise<number> 
   return reports.every((r) => r.state === 'up') ? EXIT_OK : EXIT_UNAVAILABLE;
 }
 
+/**
+ * Prints `{"<node id>": <status block>}` for the whole cluster. Exits 2 without
+ * printing if any node failed, so callers never parse a partial description.
+ */
+async function describeCluster(clusterPath: string): Promise<number> {
+  const description: ClusterDescription = {};
+  const failures: string[] = [];
+
+  for (const report of await queryCluster(clusterPath)) {
+    if (report.state === 'up' && report.status) {
+      description[String(report.id)] = report.status;
+    } else {
+      failures.push(`node ${report.id} (${report.url}): ${report.error ?? report.state}`);
+    }
+  }
+
+  if (failures.length > 0) {
+    console.error(failures.join('\n'));
+    return EXIT_UNAVAILABLE;
+  }
+  console.log(JSON.stringify(description, null, 2));
+  return EXIT_OK;
+}
+
 function table(rows: string[][]): string {
   const widths = rows[0]!.map((_, col) => Math.max(...rows.map((row) => row[col]!.length)));
   return rows.map((row) => row.map((cell, col) => cell.padEnd(widths[col]!)).join('  ').trimEnd()).join('\n');
@@ -210,6 +246,7 @@ function requireArgs(args: string[], count: number, usage: string): string[] {
   if (args.length !== count) throw new UsageError(`usage: valio ${usage}`);
   return args;
 }
+
 
 try {
   process.exitCode = await run(process.argv.slice(2));
