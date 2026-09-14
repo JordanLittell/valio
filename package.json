@@ -1,0 +1,29 @@
+{
+  "name": "valio",
+  "version": "0.1.0",
+  "description": "A simple distributed key-value database",
+  "license": "ISC",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "valio": "./src/cli.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/server.ts",
+    "dev": "node --watch src/server.ts",
+    "cluster": "node scripts/cluster.ts",
+    "typecheck": "tsc",
+    "test": "node --test \"test/**/*.test.ts\""
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.5.1",
+    "typescript": "^7.0.2"
+  }
+}
