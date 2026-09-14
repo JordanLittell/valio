@@ -19,7 +19,7 @@ export type StatusResponse = {
   pid: number;
   uptimeMs: number;
   keys: number;
-  isLeader: boolean;
+  isCoordinator: boolean;
 };
 
 /** Output of `valio cluster describe`: node id -> that node's status block. */

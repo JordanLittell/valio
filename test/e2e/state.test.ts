@@ -123,6 +123,23 @@ async function assertKeysAreEqualAcrossNodes(): Promise<void> {
     console.log(`All ${counts.length} nodes report ${expected} keys`);
 }
 
+/** Polls a killed node until it stops answering, so later assertions see the cluster without it. */
+async function waitForShutdown(url: string | null, timeoutMs = 5000): Promise<void> {
+    if (url === null) {
+        return;
+    }
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        try {
+            await fetch(`${url}/health`, { signal: AbortSignal.timeout(500) });
+        } catch {
+            return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`node at ${url} is still answering ${timeoutMs}ms after being killed`);
+}
+
 async function loadTest(params: LoadParameters) {
     let invocationCount = 0;
 
@@ -140,7 +157,7 @@ async function loadTest(params: LoadParameters) {
     }
 }
 
-describe('nodes agree on state when under load with a leader available', () => {
+describe('nodes agree on state when under load with a coordinator available', () => {
     const lightTest: LoadParameters = {
         invocations: 20,
         concurrency: 5,
@@ -158,19 +175,18 @@ describe('nodes agree on state when under load with a leader available', () => {
         });
     });
 
-    describe('when the leader is unavailable', () => {
+    describe('when the coordinator is unavailable', () => {
 
         before(async () => {
             const description = await describeCluster();
-            Object.keys(description).forEach(async (nodeId) => {
-                const nodeConfig = description[nodeId]!;
-                if (nodeConfig.isLeader) {
-                    const pid = nodeConfig.pid;
-                    process.kill(pid);
-                    console.log(`Killed leader node ${nodeId} with pid ${pid}`);
+            for (const [nodeId, nodeStatus] of Object.entries(description)) {
+                if (!nodeStatus.isCoordinator) {
+                    continue;
                 }
-                
-            });
+                process.kill(nodeStatus.pid);
+                console.log(`Killed coordinator node ${nodeId} with pid ${nodeStatus.pid}`);
+                await waitForShutdown(nodeStatus.url);
+            }
         });
         
         describe('when the request is a read', () => {
@@ -181,9 +197,15 @@ describe('nodes agree on state when under load with a leader available', () => {
         });
 
         describe('when the request is a write', () => {
-            it('should fail with a leader unavailable error', async () => {
-                const result = await call('set', { key: 'foo', value: 'bar' });
-                assert.ok(result.includes('leader unavailable'));
+            it('should fail with a coordinator unavailable error', async () => {
+                const failure = await call('set', { key: 'foo', value: 'bar' }).then(
+                    (stdout) => {
+                        throw new Error(`expected set to fail, got: ${stdout}`);
+                    },
+                    (err: CliFailure) => err,
+                );
+                assert.equal(failure.code, 2);
+                assert.match(failure.reason, /coordinator unavailable/);
             });
         });        
     });

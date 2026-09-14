@@ -15,9 +15,12 @@ Commands:
   status                 Show the target node's status
   cluster describe       Print every node's status block as JSON, keyed by node id
 
+By default commands target every node in the cluster config, failing over to the
+next node when one is unreachable. --url and --node pin the command to one node.
+
 Options:
-  --url URL       Server URL (default: $VALIO_URL or http://localhost:3001)
-  --node ID       Target a node by id from the cluster config instead of --url
+  --url URL       Pin to one server URL (default: $VALIO_URL, else the cluster config)
+  --node ID       Pin to a node by id from the cluster config instead of --url
   --cluster PATH  Cluster config file (default: $VALIO_CLUSTER or ./cluster.json)
   --json          Parse set values as JSON / print list and status as JSON
   -h, --help      Show this help`;
@@ -68,7 +71,7 @@ async function run(argv: string[]): Promise<number> {
     return describeCluster(clusterPath);
   }
 
-  const client = new ValioClient(targetUrl(opts, clusterPath));
+  const client = new ValioClient(targetUrls(opts, clusterPath));
 
   switch (command) {
     case 'get': {
@@ -154,12 +157,25 @@ async function run(argv: string[]): Promise<number> {
   }
 }
 
-function targetUrl(opts: { url?: string | undefined; node?: string | undefined }, clusterPath: string): string {
+function targetUrls(
+  opts: { url?: string | undefined; node?: string | undefined; cluster?: string | undefined },
+  clusterPath: string,
+): string[] {
   if (opts.node !== undefined) {
     if (opts.url !== undefined) throw new UsageError('use either --url or --node, not both');
-    return findNode(loadClusterConfig(clusterPath), parseNodeId(opts.node)).url;
+    return [findNode(loadClusterConfig(clusterPath), parseNodeId(opts.node)).url];
   }
-  return opts.url ?? process.env.VALIO_URL ?? 'http://localhost:3001';
+  if (opts.url !== undefined) return [opts.url];
+  if (process.env.VALIO_URL) return [process.env.VALIO_URL];
+
+  try {
+    return loadClusterConfig(clusterPath).nodes.map((n) => n.url);
+  } catch (err) {
+    // An explicitly-given config path must still error; only ./cluster.json falls back.
+    const explicit = opts.cluster !== undefined || process.env.VALIO_CLUSTER !== undefined;
+    if (explicit || !(err instanceof ClusterConfigError)) throw err;
+    return ['http://localhost:3001'];
+  }
 }
 
 type NodeReport = {

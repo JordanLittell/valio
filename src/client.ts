@@ -1,10 +1,22 @@
 import type { ErrorResponse, GetResponse, JsonValue, ListResponse, StatusResponse } from './types.ts';
 
-/** The server could not be reached (connection refused, timeout, DNS, ...). */
+export type NodeFailure = { url: string; cause: unknown };
+
+/** No node could be reached (connection refused, timeout, DNS, 5xx, ...). */
 export class ValioUnavailableError extends Error {
-  constructor(url: string, cause: unknown) {
-    super(`server unreachable: ${url}`, { cause });
+  readonly failures: readonly NodeFailure[];
+
+  constructor(failures: NodeFailure[]) {
+    const detail = (f: NodeFailure) => (f.cause as Error)?.message ?? String(f.cause);
+    super(
+      failures.length === 1
+        ? `server unreachable: ${failures[0]!.url}`
+        : `no node available (tried ${failures.length}):\n` +
+            failures.map((f) => `  ${f.url}: ${detail(f)}`).join('\n'),
+      { cause: failures.length === 1 ? failures[0]!.cause : new AggregateError(failures.map((f) => f.cause)) },
+    );
     this.name = 'ValioUnavailableError';
+    this.failures = failures;
   }
 }
 
@@ -19,12 +31,23 @@ export class ValioHttpError extends Error {
 }
 
 export class ValioClient {
-  readonly base: string;
+  /** Every candidate node, rotated by a random offset at construction. */
+  readonly urls: readonly string[];
   readonly timeoutMs: number;
+  #base: string;
 
-  constructor(base: string, timeoutMs = 5000) {
-    this.base = base.replace(/\/+$/, '');
+  constructor(base: string | string[], timeoutMs = 5000) {
+    const urls = (Array.isArray(base) ? base : [base]).map((u) => u.replace(/\/+$/, ''));
+    if (urls.length === 0) throw new TypeError('ValioClient needs at least one url');
+    const start = Math.floor(Math.random() * urls.length);
+    this.urls = [...urls.slice(start), ...urls.slice(0, start)];
+    this.#base = this.urls[0]!;
     this.timeoutMs = timeoutMs;
+  }
+
+  /** URL of the node that served (or last attempted) a request. */
+  get base(): string {
+    return this.#base;
   }
 
   async get(key: string): Promise<JsonValue | undefined> {
@@ -64,17 +87,48 @@ export class ValioClient {
   }
 
   async #request(method: string, path: string, body?: unknown): Promise<Response> {
-    const url = this.base + path;
-    try {
-      return await fetch(url, {
+    const failures: NodeFailure[] = [];
+    // Fresh init per attempt: AbortSignal.timeout cannot be reused across fetches.
+    const attempt = (origin: string) =>
+      fetch(origin + path, {
         method,
         headers: body === undefined ? undefined : { 'content-type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.timeout(this.timeoutMs),
+        // A follower redirects writes to the coordinator; following that here would
+        // re-enter this loop blind, so take the hint explicitly below.
+        redirect: 'manual',
       });
-    } catch (err) {
-      throw new ValioUnavailableError(url, err);
+
+    for (const url of this.urls) {
+      this.#base = url;
+      let res: Response;
+      try {
+        res = await attempt(url);
+      } catch (err) {
+        failures.push({ url, cause: err });
+        continue;
+      }
+
+      const coordinator = coordinatorHint(res, url);
+      if (coordinator) {
+        this.#base = coordinator;
+        try {
+          res = await attempt(coordinator);
+        } catch (err) {
+          failures.push({ url: coordinator, cause: new Error(`coordinator unavailable: ${coordinator}`, { cause: err }) });
+          continue;
+        }
+      }
+
+      // 5xx: this node is broken. Still 3xx: it did not send us anywhere useful.
+      if (res.status >= 500 || isRedirect(res)) {
+        failures.push({ url: this.#base, cause: await httpError(res) });
+        continue;
+      }
+      return res;
     }
+    throw new ValioUnavailableError(failures);
   }
 }
 
@@ -82,13 +136,34 @@ function keyPath(key: string): string {
   return `/kv/${encodeURIComponent(key)}`;
 }
 
-async function expectOk(res: Response): Promise<void> {
-  if (res.ok) return;
+function isRedirect(res: Response): boolean {
+  return res.status >= 300 && res.status < 400;
+}
+
+/** Origin a 3xx points at, when it is a different node. Null guards self-redirect loops. */
+function coordinatorHint(res: Response, from: string): string | null {
+  if (!isRedirect(res)) return null;
+  const location = res.headers.get('location');
+  if (!location) return null;
+  try {
+    const { origin } = new URL(location, from);
+    return origin === from ? null : origin;
+  } catch {
+    return null;
+  }
+}
+
+async function httpError(res: Response): Promise<ValioHttpError> {
   let message = res.statusText;
   try {
     message = ((await res.json()) as ErrorResponse).error ?? message;
   } catch {
     // non-JSON error body; keep statusText
   }
-  throw new ValioHttpError(res.status, message);
+  return new ValioHttpError(res.status, message);
+}
+
+async function expectOk(res: Response): Promise<void> {
+  if (res.ok) return;
+  throw await httpError(res);
 }

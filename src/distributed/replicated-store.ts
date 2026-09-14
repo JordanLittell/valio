@@ -40,7 +40,7 @@ export class ReplicatedStore implements KVStore {
   }
 
   async #write(event: Event): Promise<boolean> {
-    if (!this.#coordinator) throw new NotCoordinatorError(this.#coordinatorUrl);
-    return this.#coordinator.run(event);
+    if (this.#coordinator) return this.#coordinator.run(event);
+    throw new NotCoordinatorError(this.#coordinatorUrl);
   }
 }

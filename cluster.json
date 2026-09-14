@@ -1,7 +1,7 @@
 {
   "nodes": [
-    { "id": 0, "url": "http://127.0.0.1:3001", "leader": true },
-    { "id": 1, "url": "http://127.0.0.1:3002", "leader": false },
-    { "id": 2, "url": "http://127.0.0.1:3003", "leader": false }
+    { "id": 0, "url": "http://127.0.0.1:3001", "coordinator": true },
+    { "id": 1, "url": "http://127.0.0.1:3002", "coordinator": false },
+    { "id": 2, "url": "http://127.0.0.1:3003", "coordinator": false }
   ]
 }
